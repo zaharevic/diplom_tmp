@@ -7,10 +7,11 @@ import os
 import platform
 from datetime import datetime, timezone
 import re
+import os
 
-
-# Жёстко прописанный адрес сервера для отправки отчётов
-SERVER_URL = "http://192.168.3.24:8000/api/collect"
+# Default server URL (can be overridden by env var or --server)
+SERVER_URL = os.environ.get("SERVER_URL", "http://192.168.3.24:8000/api/collect")
+import argparse
 
 def normalize_name(s: str) -> str:
     if not s:
@@ -171,11 +172,7 @@ def save_report_local(data, out_dir=None):
 
 
 def send_report_if_configured(data):
-    try:
-        server = SERVER_URL
-    except NameError:
-        server = "http://192.168.3.24:8000/api/collect"
-
+    server = SERVER_URL
     headers = {'Content-Type': 'application/json'}
     tries = 3
     for attempt in range(1, tries + 1):
@@ -193,6 +190,14 @@ def send_report_if_configured(data):
 
 
 def main(out_dir=None):
+    parser = argparse.ArgumentParser(description="Linux collector")
+    parser.add_argument("--server", help="Server URL to POST reports to")
+    args = parser.parse_args()
+    global SERVER_URL
+    if args.server:
+        SERVER_URL = args.server
+    print(f"[i] Using SERVER_URL = {SERVER_URL}")
+
     data = {
         "collected_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "hostname": get_hostname(),
