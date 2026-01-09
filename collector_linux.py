@@ -5,7 +5,7 @@ import requests
 import time
 
 # Жёстко прописанный адрес сервера для отправки отчётов
-SERVER_URL = "http://192.168.3.15:8000/api/collect"
+SERVER_URL = "http://192.168.3.24:8000/api/collect"
 import os
 import platform
 from datetime import datetime, timezone
