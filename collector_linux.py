@@ -3,14 +3,14 @@ import socket
 import json
 import requests
 import time
-
-# Жёстко прописанный адрес сервера для отправки отчётов
-SERVER_URL = "http://192.168.3.24:8000/api/collect"
 import os
 import platform
 from datetime import datetime, timezone
 import re
 
+
+# Жёстко прописанный адрес сервера для отправки отчётов
+SERVER_URL = "http://192.168.3.24:8000/api/collect"
 
 def normalize_name(s: str) -> str:
     if not s:
@@ -171,11 +171,16 @@ def save_report_local(data, out_dir=None):
 
 
 def send_report_if_configured(data):
+    try:
+        server = SERVER_URL
+    except NameError:
+        server = "http://192.168.3.24:8000/api/collect"
+
     headers = {'Content-Type': 'application/json'}
     tries = 3
     for attempt in range(1, tries + 1):
         try:
-            resp = requests.post(SERVER_URL, json=data, timeout=5, headers=headers)
+            resp = requests.post(server, json=data, timeout=5, headers=headers)
             if resp.status_code == 200:
                 print('[+] Отчёт отправлен на сервер')
                 return True
