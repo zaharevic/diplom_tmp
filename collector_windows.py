@@ -66,6 +66,7 @@ except Exception:
 
 # Default server URL (can be overridden by env var or --server)
 SERVER_URL = os.environ.get("SERVER_URL", "http://192.168.3.24:8000/api/collect")
+API_KEY = os.environ.get("API_KEY")
 
 
 def get_hostname():
@@ -197,6 +198,8 @@ def send_report_if_configured(data):
     server = SERVER_URL
 
     headers = {'Content-Type': 'application/json'}
+    if API_KEY:
+        headers['X-API-KEY'] = API_KEY
     tries = 3
     for attempt in range(1, tries + 1):
         try:
@@ -215,11 +218,16 @@ def send_report_if_configured(data):
 def main(out_dir=None):
     parser = argparse.ArgumentParser(description="Windows collector")
     parser.add_argument("--server", help="Server URL to POST reports to")
+    parser.add_argument("--key", help="API key for authentication")
     args = parser.parse_args()
-    global SERVER_URL
+    global SERVER_URL, API_KEY
     if args.server:
         SERVER_URL = args.server
+    if args.key:
+        API_KEY = args.key
     print(f"[i] Using SERVER_URL = {SERVER_URL}")
+    if API_KEY:
+        print(f"[i] Using API_KEY for authentication")
     data = {
         "collected_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "hostname": get_hostname(),
