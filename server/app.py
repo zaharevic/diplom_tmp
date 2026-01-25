@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 # Import NVD module
 from nvd import NVDClient
+from dashboard import create_dashboard_route
 
 app = FastAPI()
 
@@ -300,6 +301,10 @@ async def scan_host(hostname: str):
         "vulnerable_count": len(vulnerable),
         "vulnerable_packages": vulnerable,
     })
+
+
+# Initialize dashboard routes
+create_dashboard_route(app)
 
 
 if __name__ == "__main__":
