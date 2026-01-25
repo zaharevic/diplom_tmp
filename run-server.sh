@@ -1,12 +1,18 @@
 #!/bin/bash
 set -e
 
+# Load environment variables from .env if it exists
+if [ -f "$(dirname "$0")/.env" ]; then
+    export $(cat $(dirname "$0")/.env | grep -v '^#' | xargs)
+fi
+
 # Configuration
 IMAGE_NAME="vuln-collector"
 CONTAINER_NAME="vuln-collector"
 PORT=8000
 DATA_DIR="${DATA_DIR:-.data}"
 API_KEY="${API_KEY:-change-me-secret-key}"
+NVD_API_KEY="${NVD_API_KEY:-}"
 SERVER_DIR="server"
 
 # Colors for output
@@ -29,9 +35,10 @@ print_usage() {
     echo "  cleanup    - Remove container and image"
     echo ""
     echo "Environment variables:"
-    echo "  DATA_DIR   - Local directory to mount for reports (default: .data)"
-    echo "  API_KEY    - API key for authentication (default: change-me-secret-key)"
-    echo "  PORT       - Port to expose (default: 8000)"
+    echo "  DATA_DIR      - Local directory to mount for reports (default: .data)"
+    echo "  API_KEY       - API key for authentication (default: change-me-secret-key)"
+    echo "  NVD_API_KEY   - NVD API key for higher rate limits (optional)"
+    echo "  PORT          - Port to expose (default: 8000)"
 }
 
 build_image() {
@@ -64,6 +71,7 @@ run_container() {
         -p ${PORT}:8000 \
         -v ${PWD}/${DATA_DIR}:/data/reports \
         -e API_KEY="${API_KEY}" \
+        -e NVD_API_KEY="${NVD_API_KEY}" \
         -e DB_PATH="/data/reports/vuln_collector.db" \
         -e DATA_DIR="/data/reports" \
         ${IMAGE_NAME}
@@ -72,6 +80,11 @@ run_container() {
     echo -e "${GREEN}[+] Container running${NC}"
     echo -e "${GREEN}[+] Server available at http://localhost:${PORT}${NC}"
     echo -e "${GREEN}[+] API_KEY: ${API_KEY}${NC}"
+    if [ -n "${NVD_API_KEY}" ]; then
+        echo -e "${GREEN}[+] NVD_API_KEY: configured (120 req/min rate limit)${NC}"
+    else
+        echo -e "${YELLOW}[!] NVD_API_KEY: not set (10 req/min rate limit)${NC}"
+    fi
     echo -e "${GREEN}[+] Data directory: ${DATA_DIR}${NC}"
 }
 
