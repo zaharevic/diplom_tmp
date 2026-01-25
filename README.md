@@ -5,15 +5,10 @@
 - Server: FastAPI application in `server/app.py`.
 - Collectors: `collector_linux.py`, `collector_windows.py` — собирают список ПО и отправляют JSON на сервер или сохраняют локально.
 
-Как запустить сервер локально (без Docker):
+Запуск сервера
 
 ```bash
-python server/app.py
-```
-
-Docker:
-
-```bash
-docker build -t vuln-collector-server -f server/Dockerfile server
-docker run -p 8000:8000 -v /path/to/data:/data/reports vuln-collector-server
+sudo chmod +x run-server.sh
+./run-server.sh build
+./run-server.sh start
 ```
