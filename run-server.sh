@@ -1,18 +1,11 @@
 #!/bin/bash
 set -e
 
-# Load environment variables from .env if it exists
-if [ -f "$(dirname "$0")/.env" ]; then
-    export $(cat $(dirname "$0")/.env | grep -v '^#' | xargs)
-fi
-
 # Configuration
 IMAGE_NAME="vuln-collector"
 CONTAINER_NAME="vuln-collector"
 PORT=8000
 DATA_DIR="${DATA_DIR:-.data}"
-API_KEY="${API_KEY:-change-me-secret-key}"
-NVD_API_KEY="${NVD_API_KEY:-}"
 SERVER_DIR="server"
 
 # Colors for output
@@ -64,26 +57,47 @@ run_container() {
     mkdir -p ${DATA_DIR}
 
     echo -e "${YELLOW}[*] Starting container: ${CONTAINER_NAME}${NC}"
-    docker run \
-        --rm \
-        -d \
-        --name ${CONTAINER_NAME} \
-        -p ${PORT}:8000 \
-        -v ${PWD}/${DATA_DIR}:/data/reports \
-        -e API_KEY="${API_KEY}" \
-        -e NVD_API_KEY="${NVD_API_KEY}" \
-        -e DB_PATH="/data/reports/vuln_collector.db" \
-        -e DATA_DIR="/data/reports" \
-        ${IMAGE_NAME}
+    
+    # Build docker run command with env file support
+    if [ -f ".env" ]; then
+        docker run \
+            --rm \
+            -d \
+            --name ${CONTAINER_NAME} \
+            -p ${PORT}:8000 \
+            -v ${PWD}/${DATA_DIR}:/data/reports \
+            --env-file .env \
+            -e DB_PATH="/data/reports/vuln_collector.db" \
+            -e DATA_DIR="/data/reports" \
+            ${IMAGE_NAME}
+    else
+        docker run \
+            --rm \
+            -d \
+            --name ${CONTAINER_NAME} \
+            -p ${PORT}:8000 \
+            -v ${PWD}/${DATA_DIR}:/data/reports \
+            -e API_KEY="${API_KEY}" \
+            -e NVD_API_KEY="${NVD_API_KEY}" \
+            -e DB_PATH="/data/reports/vuln_collector.db" \
+            -e DATA_DIR="/data/reports" \
+            ${IMAGE_NAME}
+    fi
 
     sleep 2
     echo -e "${GREEN}[+] Container running${NC}"
     echo -e "${GREEN}[+] Server available at http://localhost:${PORT}${NC}"
-    echo -e "${GREEN}[+] API_KEY: ${API_KEY}${NC}"
-    if [ -n "${NVD_API_KEY}" ]; then
-        echo -e "${GREEN}[+] NVD_API_KEY: configured (120 req/min rate limit)${NC}"
+    
+    if [ -f ".env" ]; then
+        echo -e "${GREEN}[+] Configuration loaded from .env${NC}"
+        if grep -q "NVD_API_KEY=" .env; then
+            echo -e "${GREEN}[+] NVD_API_KEY: configured (120 req/min rate limit)${NC}"
+        else
+            echo -e "${YELLOW}[!] NVD_API_KEY: not set (10 req/min rate limit)${NC}"
+        fi
     else
-        echo -e "${YELLOW}[!] NVD_API_KEY: not set (10 req/min rate limit)${NC}"
+        echo -e "${YELLOW}[!] .env not found, using defaults${NC}"
+        echo -e "${YELLOW}[!] Copy .env.example to .env and add your keys${NC}"
     fi
     echo -e "${GREEN}[+] Data directory: ${DATA_DIR}${NC}"
 }
