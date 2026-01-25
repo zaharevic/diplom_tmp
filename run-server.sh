@@ -19,13 +19,15 @@ print_usage() {
     echo "Usage: $0 {build|run|stop|logs|shell|db|cleanup}"
     echo ""
     echo "Commands:"
-    echo "  build      - Build Docker image"
-    echo "  run        - Run container (build if needed)"
-    echo "  stop       - Stop running container"
-    echo "  logs       - Show container logs"
-    echo "  shell      - Open interactive shell in running container"
-    echo "  db         - Query database (check reports and software)"
-    echo "  cleanup    - Remove container and image"
+    echo "  build          - Build Docker image"
+    echo "  run            - Run container (build if needed)"
+    echo "  stop           - Stop running container"
+    echo "  logs           - Show container logs"
+    echo "  shell          - Open interactive shell in running container"
+    echo "  db             - Query database (check reports and software)"
+    echo "  clean-cache    - Clear NVD API cache (keeps reports and software)"
+    echo "  clean-db       - Delete all data (reports, software, cache)"
+    echo "  cleanup        - Remove container and image"
     echo ""
     echo "Environment variables:"
     echo "  DATA_DIR      - Local directory to mount for reports (default: .data)"
@@ -156,6 +158,25 @@ cleanup() {
     echo -e "${GREEN}[+] Cleanup complete${NC}"
 }
 
+clean_cache() {
+    echo -e "${YELLOW}[*] Clearing NVD API cache...${NC}"
+    ./run-server.sh db "DELETE FROM cve_cache;"
+    echo -e "${GREEN}[+] NVD API cache cleared${NC}"
+    echo -e "${GREEN}[+] Reports and software data preserved${NC}"
+}
+
+clean_db() {
+    echo -e "${RED}[!] WARNING: This will delete ALL data (reports, software, cache)${NC}"
+    read -p "Are you sure? Type 'yes' to confirm: " confirm
+    if [ "$confirm" = "yes" ]; then
+        echo -e "${YELLOW}[*] Deleting all data...${NC}"
+        ./run-server.sh db "DELETE FROM cve_cache; DELETE FROM software; DELETE FROM reports;"
+        echo -e "${GREEN}[+] All data deleted${NC}"
+    else
+        echo -e "${YELLOW}[!] Cancelled${NC}"
+    fi
+}
+
 # Main
 if [ $# -eq 0 ]; then
     print_usage
@@ -180,6 +201,12 @@ case "$1" in
         ;;
     db)
         query_db
+        ;;
+    clean-cache)
+        clean_cache
+        ;;
+    clean-db)
+        clean_db
         ;;
     cleanup)
         cleanup

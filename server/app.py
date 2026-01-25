@@ -6,6 +6,7 @@ import json
 import sqlite3
 import logging
 import time
+import sys
 from datetime import datetime, timezone
 from contextlib import contextmanager
 
@@ -18,8 +19,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Import NVD module
-from nvd import NVDClient
+from nvd import NVDClient, print_nvd_log_summary
 from dashboard import create_dashboard_route
+
+# Check for -nvd-log flag
+NVD_LOG = "-nvd-log" in sys.argv or os.environ.get("NVD_LOG") == "true"
+if NVD_LOG:
+    logger.info("NVD API logging enabled - detailed statistics will be printed")
 
 app = FastAPI()
 
@@ -203,7 +209,8 @@ async def get_software(hostname: str = None, name: str = None, limit: int = 1000
     
     with get_db() as conn:
         c = conn.cursor()
-        query = "SELECT id, report_id, hostname, name, version FROM software WHERE 1=1"
+        # Use DISTINCT to avoid duplicates from multiple reports
+        query = "SELECT DISTINCT hostname, name, version FROM software WHERE 1=1"
         params = []
         if hostname:
             query += " AND hostname = ?"
@@ -216,7 +223,7 @@ async def get_software(hostname: str = None, name: str = None, limit: int = 1000
         c.execute(query, params)
         software = [dict(row) for row in c.fetchall()]
     
-    logger.info(f"Retrieved {len(software)} software records (hostname={hostname}, name={name})")
+    logger.info(f"Retrieved {len(software)} unique software records (hostname={hostname}, name={name})")
     return JSONResponse({"software": software})
 
 
@@ -295,6 +302,11 @@ async def scan_host(hostname: str):
     logger.info(
         f"Scan complete for {hostname}: checked={checked}, vulnerable={len(vulnerable)}"
     )
+    
+    # Print NVD API statistics if logging enabled
+    if NVD_LOG:
+        print_nvd_log_summary()
+    
     return JSONResponse({
         "hostname": hostname,
         "total_software": checked,

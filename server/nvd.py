@@ -19,6 +19,15 @@ logger = logging.getLogger(__name__)
 # NVD API endpoint
 NVD_API_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 
+# Global statistics for NVD queries
+nvd_stats = {
+    "total_queries": 0,
+    "cached_hits": 0,
+    "api_calls": 0,
+    "total_cves_found": 0,
+    "start_time": None,
+}
+
 
 def normalize_for_nvd(name: str) -> str:
     """
@@ -333,9 +342,17 @@ class NVDClient:
             "vulnerable": bool,
         }
         """
+        # Initialize stats on first call
+        if nvd_stats["start_time"] is None:
+            nvd_stats["start_time"] = time.time()
+        
+        nvd_stats["total_queries"] += 1
+        
         # Check cache first
         if self.cache.is_cached_and_fresh(package_name, version):
             cached_result = self.cache.get_cached_result(package_name, version)
+            nvd_stats["cached_hits"] += 1
+            nvd_stats["total_cves_found"] += cached_result["cves_found"]
             return {
                 "package": package_name,
                 "version": version,
@@ -347,7 +364,9 @@ class NVDClient:
             }
         
         # Query NVD API
+        nvd_stats["api_calls"] += 1
         cves = self._query_nvd_api(package_name, version)
+        nvd_stats["total_cves_found"] += len(cves)
         self.cache.cache_result(package_name, version or "", cves)
         
         cvss_max = max([cve.get("cvss", 0) for cve in cves], default=0)
@@ -361,3 +380,29 @@ class NVDClient:
             "cves": cves,
             "vulnerable": len(cves) > 0,
         }
+
+def get_nvd_stats():
+    """Get NVD API statistics."""
+    return nvd_stats.copy()
+
+
+def print_nvd_log_summary():
+    """Print summary of NVD API usage."""
+    stats = nvd_stats
+    
+    if stats["start_time"] is None:
+        return
+    
+    elapsed = time.time() - stats["start_time"]
+    
+    print("\n" + "="*70)
+    print("NVD API STATISTICS")
+    print("="*70)
+    print(f"Total queries:        {stats['total_queries']}")
+    print(f"Cache hits:           {stats['cached_hits']} ({stats['cached_hits']*100//max(1, stats['total_queries'])}%)")
+    print(f"API calls:            {stats['api_calls']}")
+    print(f"Total CVEs found:     {stats['total_cves_found']}")
+    print(f"Elapsed time:         {elapsed:.2f}s")
+    if stats['api_calls'] > 0:
+        print(f"Avg CVEs per call:    {stats['total_cves_found']/stats['api_calls']:.1f}")
+    print("="*70 + "\n")

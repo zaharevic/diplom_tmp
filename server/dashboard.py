@@ -30,7 +30,11 @@ def get_dashboard_html():
         c.execute("SELECT COUNT(*) FROM reports")
         reports_count = c.fetchone()[0]
         
-        c.execute("SELECT COUNT(*) FROM software")
+        # Count unique software (distinct by hostname + name + version)
+        c.execute("""
+            SELECT COUNT(DISTINCT hostname || '|' || name || '|' || version) 
+            FROM software
+        """)
         software_count = c.fetchone()[0]
         
         c.execute("SELECT COUNT(*) FROM cve_cache WHERE cves_found > 0")
@@ -39,10 +43,13 @@ def get_dashboard_html():
         c.execute("SELECT COUNT(DISTINCT hostname) FROM reports")
         hosts_count = c.fetchone()[0]
         
-        # Get recent reports
+        # Get recent reports (one per hostname, most recent)
         c.execute("""
             SELECT id, hostname, ip, os, received_at 
             FROM reports 
+            WHERE id IN (
+                SELECT MAX(id) FROM reports GROUP BY hostname
+            )
             ORDER BY received_at DESC 
             LIMIT 10
         """)
