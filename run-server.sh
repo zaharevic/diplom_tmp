@@ -7,6 +7,7 @@ CONTAINER_NAME="vuln-collector"
 PORT=8000
 DATA_DIR="${DATA_DIR:-.data}"
 API_KEY="${API_KEY:-change-me-secret-key}"
+SERVER_DIR="server"
 
 # Colors for output
 RED='\033[0;31m'
@@ -34,7 +35,7 @@ print_usage() {
 
 build_image() {
     echo -e "${YELLOW}[*] Building Docker image: ${IMAGE_NAME}${NC}"
-    docker build -t ${IMAGE_NAME} .
+    docker build -f ${SERVER_DIR}/Dockerfile -t ${IMAGE_NAME} ${SERVER_DIR}
     echo -e "${GREEN}[+] Image built successfully${NC}"
 }
 
