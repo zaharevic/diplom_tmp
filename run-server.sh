@@ -17,7 +17,7 @@ NC='\033[0m' # No Color
 
 # Functions
 print_usage() {
-    echo "Usage: $0 {build|run|stop|logs|shell|cleanup}"
+    echo "Usage: $0 {build|run|stop|logs|shell|db|cleanup}"
     echo ""
     echo "Commands:"
     echo "  build      - Build Docker image"
@@ -25,6 +25,7 @@ print_usage() {
     echo "  stop       - Stop running container"
     echo "  logs       - Show container logs"
     echo "  shell      - Open interactive shell in running container"
+    echo "  db         - Query database (check reports and software)"
     echo "  cleanup    - Remove container and image"
     echo ""
     echo "Environment variables:"
@@ -98,6 +99,26 @@ open_shell() {
     docker exec -it ${CONTAINER_NAME} /bin/sh
 }
 
+query_db() {
+    if ! docker ps --filter "name=${CONTAINER_NAME}" --format "{{.Names}}" | grep -q ${CONTAINER_NAME}; then
+        echo -e "${RED}[-] Container not running${NC}"
+        exit 1
+    fi
+    echo -e "${YELLOW}[*] Querying database...${NC}"
+    docker exec ${CONTAINER_NAME} sqlite3 /data/reports/vuln_collector.db << 'EOF'
+.mode column
+.headers on
+SELECT '=== REPORTS ===' as info;
+SELECT id, hostname, ip, os, collected_at FROM reports ORDER BY id DESC LIMIT 10;
+SELECT '=== REPORTS COUNT ===' as info;
+SELECT COUNT(*) as total_reports FROM reports;
+SELECT '=== SOFTWARE COUNT BY HOST ===' as info;
+SELECT hostname, COUNT(*) as software_count FROM software GROUP BY hostname;
+SELECT '=== SAMPLE SOFTWARE ===' as info;
+SELECT hostname, name, version FROM software LIMIT 10;
+EOF
+}
+
 cleanup() {
     echo -e "${YELLOW}[*] Cleaning up...${NC}"
     stop_container
@@ -129,6 +150,9 @@ case "$1" in
         ;;
     shell)
         open_shell
+        ;;
+    db)
+        query_db
         ;;
     cleanup)
         cleanup
