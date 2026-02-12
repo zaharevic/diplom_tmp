@@ -4,6 +4,7 @@ Handles CVE lookups with smart caching (24h TTL) and package name normalization.
 """
 
 import sqlite3
+import os
 import requests
 import json
 import re
@@ -27,6 +28,9 @@ nvd_stats = {
     "total_cves_found": 0,
     "start_time": None,
 }
+
+# Verbose logging toggle (set NVD_VERBOSE=1 in environment or .env)
+VERBOSE_NVD = os.environ.get("NVD_VERBOSE", "").lower() not in ("", "0", "false", "no")
 
 
 def normalize_for_nvd(name: str) -> str:
@@ -226,7 +230,20 @@ class NVDClient:
                     try:
                         logger.info(f"Querying NVD for: {keyword} (version: {version})")
                         resp = self.session.get(NVD_API_URL, params=params, timeout=10)
-                        
+
+                        # Log request/response details when verbose logging enabled
+                        try:
+                            req_url = resp.request.url if resp is not None and hasattr(resp, 'request') else None
+                        except Exception:
+                            req_url = None
+                        if req_url:
+                            logger.debug(f"NVD request URL: {req_url}")
+                        logger.debug(f"NVD response status: {getattr(resp, 'status_code', 'N/A')}")
+                        if VERBOSE_NVD:
+                            # Truncate large bodies
+                            body = getattr(resp, 'text', '')
+                            logger.debug(f"NVD response body (truncated 4000 chars): {body[:4000]}")
+
                         if resp.status_code == 429:
                             # Rate limited
                             if attempt < max_retries - 1:
@@ -311,8 +328,16 @@ class NVDClient:
                         break
                     
                     except requests.exceptions.RequestException as e:
+                        # Try to log response body if available
+                        resp_text = None
+                        try:
+                            resp_text = e.response.text if hasattr(e, 'response') and e.response is not None else None
+                        except Exception:
+                            resp_text = None
+                        logger.error(f"Error querying NVD API for {keyword}: {e}")
+                        if VERBOSE_NVD and resp_text:
+                            logger.debug(f"NVD error response body (truncated): {resp_text[:4000]}")
                         if "429" not in str(e):
-                            logger.error(f"Error querying NVD API for {keyword}: {e}")
                             break
                         # For 429, retry logic above handles it
                 
