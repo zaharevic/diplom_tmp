@@ -701,6 +701,9 @@ def get_dashboard_html():
     </body>
     </html>
     """
+    # Collapse any doubled braces left from f-string escaping into single braces
+    html = html.replace('{{', '{').replace('}}', '}')
+
     # Replace placeholders with actual values. Using .replace keeps all JS/CSS braces literal.
     html = html.replace('{reports_count}', str(reports_count)) \
                .replace('{hosts_count}', str(hosts_count)) \
