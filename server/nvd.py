@@ -95,62 +95,33 @@ def normalize_for_nvd(name: str) -> str:
 
 def get_cpe_keywords(name: str) -> List[str]:
     """
-    Generate alternative search keywords for NVD.
-    Tries multiple variations: normalized name, individual words, alternatives.
+    Generate MINIMAL search keywords for NVD (max 3-4).
+    Prioritizes: normalized name, then first word, then specific product name if identifiable.
     """
     normalized = normalize_for_nvd(name)
+    
+    # Start with normalized name as primary keyword
     keywords = [normalized]
     
-    # Also try with underscores for NVD compatibility
-    normalized_underscore = normalized.replace(' ', '_')
-    if normalized_underscore != normalized:
-        keywords.append(normalized_underscore)
-    
-    # Try individual words (in case multi-word name doesn't match)
+    # Add first word if multi-word (often the main product)
     words = normalized.split()
     if len(words) > 1:
-        # Add first word (main product name)
         keywords.append(words[0])
-        # Add pairs of first two words
-        keywords.append('_'.join(words[:2]))
-        keywords.append(' '.join(words[:2]))
     
-    # Add common product name variations
-    lower_norm = normalized.lower()
+    # Add ONE specific alternative if identifiable
+    lower = name.lower()
     
-    # Microsoft products
-    if 'microsoft' in lower_norm and 'office' in lower_norm:
-        keywords.extend(['office', 'microsoft office'])
-    elif 'microsoft' in lower_norm and 'edge' in lower_norm:
-        keywords.extend(['edge', 'chromium'])
-    elif 'visual' in lower_norm and 'studio' in lower_norm:
-        keywords.extend(['visual studio', 'visual_studio'])
-    elif 'visual' in lower_norm and 'c' in lower_norm:
-        keywords.extend(['visual c', 'vc', 'msvcrt'])
-    
-    # Java
-    if 'java' in lower_norm:
-        keywords.append('jre')
-        if 'update' not in lower_norm:  # Avoid "java update" 
-            keywords.extend(['oracle java', 'jdk'])
-    
-    # Python
-    if 'python' in lower_norm:
-        keywords.extend(['cpython', 'python'])
-    
-    # Git
-    if 'git' in lower_norm:
+    # Only add specific alternatives if they're meaningfully different from normalized
+    if 'java' in lower and 'python' not in lower:
+        if 'jre' not in normalized:
+            keywords.append('jre')
+    elif 'git' in lower and 'git' not in normalized:
         keywords.append('git-scm')
+    elif '7' in lower and 'zip' in lower:
+        if '7zip' not in normalized and '7-zip' not in normalized:
+            keywords.append('7-zip')
     
-    # 7-Zip
-    if '7' in lower_norm or 'zip' in lower_norm:
-        keywords.extend(['7-zip', '7zip', 'sevenzip'])
-    
-    # Common name corrections
-    if lower_norm == 'discord':
-        keywords.append('discord')
-    
-    # Remove duplicates and empty strings, preserve order
+    # Remove duplicates
     seen = set()
     result = []
     for kw in keywords:
@@ -158,7 +129,8 @@ def get_cpe_keywords(name: str) -> List[str]:
             seen.add(kw.lower())
             result.append(kw)
     
-    return result
+    # Hard limit: never more than 3 keywords
+    return result[:3]
 
 
 class NVDCache:
@@ -287,15 +259,16 @@ class NVDClient:
         Returns list of CVE objects with CVSS scores.
         
         Implements exponential backoff for 429 (Too Many Requests) errors.
+        Stops trying keywords once CVEs are found to conserve API quota.
         """
         try:
             normalized = normalize_for_nvd(package_name)
             
-            # Try multiple keyword variations
+            # Try multiple keyword variations (but stop after first success)
             keywords = get_cpe_keywords(package_name)
             all_cves = {}  # Use dict to avoid duplicates by CVE ID
             
-            for keyword in keywords:
+            for keyword_idx, keyword in enumerate(keywords):
                 params = {
                     "keywordSearch": keyword,
                     "resultsPerPage": 50,
@@ -337,6 +310,7 @@ class NVDClient:
                                 continue
                             else:
                                 logger.error(f"NVD API rate limit exceeded for {keyword} after {max_retries} retries")
+                                # Don't break here, try next keyword
                                 break
                         
                         resp.raise_for_status()
@@ -422,9 +396,10 @@ class NVDClient:
                             break
                         # For 429, retry logic above handles it
                 
-                # Small delay between keyword searches to avoid rate limiting
-                if keyword != keywords[-1]:  # Not the last keyword
-                    time.sleep(0.5)
+                # *** KEY FIX: Stop trying keywords if we found CVEs ***
+                if all_cves:
+                    logger.debug(f"Found {len(all_cves)} CVEs with keyword '{keyword}', stopping search")
+                    break
             
             logger.debug(f"Total unique CVEs found for {package_name}: {len(all_cves)}")
             return list(all_cves.values())[:50]  # Return top 50
