@@ -271,45 +271,78 @@ async def scan_host(hostname: str):
         raise HTTPException(status_code=400, detail="hostname required")
     
     logger.info(f"Host scan requested: hostname={hostname}")
-    
+    # Instead of performing an immediate NVD scan (which can be long-running),
+    # return the list of available packages for the host so the user can
+    # select which ones to scan via the UI. Scanning is performed by
+    # POST /api/scan-packages with a list of package names.
     with get_db() as conn:
         c = conn.cursor()
         c.execute("SELECT DISTINCT name, version FROM software WHERE hostname = ? ORDER BY name", (hostname,))
-        software_list = c.fetchall()
-    
-    logger.info(f"Found {len(software_list)} unique software packages on {hostname}")
-    
+        rows = c.fetchall()
+
+    software_list = [{"name": r[0], "version": r[1]} for r in rows]
+    logger.info(f"Returning {len(software_list)} unique software packages for {hostname} (no NVD queries performed)")
+
+    return JSONResponse({
+        "hostname": hostname,
+        "total_software": len(software_list),
+        "software": software_list,
+    })
+
+
+@app.post("/api/scan-packages")
+async def scan_packages(request: Request):
+    """
+    Scan selected packages for a host. Expects JSON:
+    {
+      "hostname": "DESKTOP-...",
+      "packages": [ {"name": "pkg1", "version": "1.2"}, {"name": "pkg2"} ]
+    }
+    Returns CVE results for selected packages.
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    hostname = payload.get("hostname")
+    packages = payload.get("packages")
+    if not hostname or not packages or not isinstance(packages, list):
+        raise HTTPException(status_code=400, detail="hostname and packages[] required")
+
+    logger.info(f"Selected scan requested for host={hostname}, packages={len(packages)}")
+
     vulnerable = []
     checked = 0
-    
-    for name, version in software_list:
+
+    for pkg in packages:
+        name = pkg.get("name")
+        version = pkg.get("version") if pkg.get("version") else None
+        if not name:
+            continue
         checked += 1
         result = nvd_client.check_package(name, version)
-        
+
         if result["vulnerable"]:
             vulnerable.append({
                 "name": name,
                 "version": version,
                 "cves_found": result["cves_found"],
                 "cvss_max": result["cvss_max"],
-                "cves": result["cves"][:5],  # Top 5 CVEs
+                "cves": result["cves"][:10],
             })
             logger.warning(
-                f"Vulnerability found on {hostname}: {name} v{version} "
-                f"({result['cves_found']} CVEs, CVSS max={result['cvss_max']})"
+                f"Vulnerability found on {hostname}: {name} v{version} ({result['cves_found']} CVEs, CVSS max={result['cvss_max']})"
             )
-    
-    logger.info(
-        f"Scan complete for {hostname}: checked={checked}, vulnerable={len(vulnerable)}"
-    )
-    
-    # Print NVD API statistics if logging enabled
+
+    logger.info(f"Selected scan complete for {hostname}: checked={checked}, vulnerable={len(vulnerable)}")
+
     if NVD_LOG:
         print_nvd_log_summary()
-    
+
     return JSONResponse({
         "hostname": hostname,
-        "total_software": checked,
+        "checked": checked,
         "vulnerable_count": len(vulnerable),
         "vulnerable_packages": vulnerable,
     })

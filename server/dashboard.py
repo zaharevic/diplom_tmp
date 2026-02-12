@@ -310,9 +310,17 @@ def get_dashboard_html():
                     </select>
                 </div>
                 <div id="softwareTable" style="display: none;">
+                    <div style="margin-bottom:10px; display:flex; gap:10px; align-items:center;">
+                        <button class="btn-small btn-edit" id="scanSelectedBtn" onclick="scanSelected()" disabled>🔎 Scan Selected</button>
+                        <button class="btn-small" onclick="selectAll(true)">Select All</button>
+                        <button class="btn-small" onclick="selectAll(false)">Clear All</button>
+                        <div id="scanStatus" style="margin-left:10px; color:#666; font-size:13px;"></div>
+                    </div>
+
                     <table>
                         <thead>
                             <tr>
+                                <th style="width:40px"></th>
                                 <th>Package Name</th>
                                 <th>Version</th>
                             </tr>
@@ -320,6 +328,7 @@ def get_dashboard_html():
                         <tbody id="softwareBody">
                         </tbody>
                     </table>
+                    <div id="scanResults" style="margin-top:12px;"></div>
                 </div>
                 <div id="loading" style="display: none;">Loading...</div>
             </div>
@@ -587,6 +596,98 @@ def get_dashboard_html():
                 setTimeout(() => {{
                     item.style.opacity = '1';
                 }}, 500);
+            }}
+            
+            // Fetch software list for selected host (no scanning)
+            async function querySoftware() {{
+                const hostname = document.getElementById('hostSelect').value;
+                const tbody = document.getElementById('softwareBody');
+                const loading = document.getElementById('loading');
+                const softwareTable = document.getElementById('softwareTable');
+                tbody.innerHTML = '';
+                document.getElementById('scanResults').innerHTML = '';
+                if (!hostname) {{
+                    softwareTable.style.display = 'none';
+                    return;
+                }}
+                loading.style.display = 'block';
+                try {{
+                    const resp = await fetch(`/api/scan-host?hostname=${{encodeURIComponent(hostname)}}`);
+                    const data = await resp.json();
+                    const packages = data.software || [];
+                    const scanBtn = document.getElementById('scanSelectedBtn');
+                    scanBtn.disabled = true;
+                    if (packages.length === 0) {{
+                        tbody.innerHTML = '<tr><td colspan="3">No packages found</td></tr>';
+                    }} else {{
+                        packages.forEach(pkg => {{
+                            const safeId = pkg.name.replace(/[^a-z0-9_-]/gi, '_');
+                            const row = `<tr>
+                                <td><input type="checkbox" class="pkg-chk" data-name="${{pkg.name}}" id="chk-${{safeId}}"></td>
+                                <td>${{pkg.name}}</td>
+                                <td>${{pkg.version || 'N/A'}}</td>
+                            </tr>`;
+                            tbody.innerHTML += row;
+                        }});
+                        document.querySelectorAll('.pkg-chk').forEach(chk => {{
+                            chk.addEventListener('change', () => {{
+                                const any = Array.from(document.querySelectorAll('.pkg-chk')).some(c => c.checked);
+                                scanBtn.disabled = !any;
+                            }});
+                        }});
+                    }}
+                    softwareTable.style.display = 'block';
+                }} catch (err) {{
+                    console.error('Error fetching software:', err);
+                    tbody.innerHTML = '<tr><td colspan="3">Error loading packages</td></tr>';
+                    document.getElementById('scanStatus').textContent = 'Error loading packages';
+                }} finally {{
+                    loading.style.display = 'none';
+                }}
+            }}
+
+            function selectAll(state) {{
+                document.querySelectorAll('.pkg-chk').forEach(c => c.checked = state);
+                const scanBtn = document.getElementById('scanSelectedBtn');
+                scanBtn.disabled = !state;
+            }}
+
+            async function scanSelected() {{
+                const hostname = document.getElementById('hostSelect').value;
+                if (!hostname) return alert('Select a host first');
+                const checked = Array.from(document.querySelectorAll('.pkg-chk')).filter(c => c.checked).map(c => ({name: c.dataset.name}));
+                if (checked.length === 0) return alert('No packages selected');
+
+                const status = document.getElementById('scanStatus');
+                status.textContent = 'Starting scan...';
+                const scanResultsDiv = document.getElementById('scanResults');
+                scanResultsDiv.innerHTML = '';
+
+                try {{
+                    const resp = await fetch('/api/scan-packages', {{
+                        method: 'POST',
+                        headers: {{'Content-Type': 'application/json'}},
+                        body: JSON.stringify({ hostname: hostname, packages: checked })
+                    }});
+                    if (!resp.ok) throw new Error('Scan failed');
+                    const result = await resp.json();
+
+                    status.textContent = `Checked ${result.checked}, vulnerable: ${result.vulnerable_count}`;
+                    if (result.vulnerable_packages && result.vulnerable_packages.length) {{
+                        let html = '<h3>Vulnerable Packages</h3><ul>';
+                        result.vulnerable_packages.forEach(v => {{
+                            html += `<li><strong>${{v.name}}</strong> ${{v.version || ''}} — ${{v.cves_found}} CVE(s), CVSS max: ${{v.cvss_max}}</li>`;
+                        }});
+                        html += '</ul>';
+                        scanResultsDiv.innerHTML = html;
+                    }} else {{
+                        scanResultsDiv.innerHTML = '<div style="color:green;">No vulnerabilities found for selected packages.</div>';
+                    }}
+                }} catch (err) {{
+                    console.error(err);
+                    status.textContent = 'Error during scan';
+                    scanResultsDiv.innerHTML = '<div style="color:#d32f2f;">Scan failed.</div>';
+                }}
             }}
             
             // Load packages when page loads
