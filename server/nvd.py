@@ -29,8 +29,30 @@ nvd_stats = {
     "start_time": None,
 }
 
+# Rate limiting: minimum delay between API requests (seconds)
+NVD_REQUEST_DELAY = 5  # 5 seconds between requests
+last_nvd_request_time = 0.0  # Timestamp of last NVD API request
+
 # Verbose logging toggle (set NVD_VERBOSE=1 in environment or .env)
 VERBOSE_NVD = os.environ.get("NVD_VERBOSE", "").lower() not in ("", "0", "false", "no")
+
+
+def wait_for_rate_limit():
+    """
+    Enforce rate limiting: wait until NVD_REQUEST_DELAY seconds have passed since last request.
+    This prevents overwhelming the NVD API.
+    """
+    global last_nvd_request_time
+    
+    now = time.time()
+    elapsed = now - last_nvd_request_time
+    
+    if elapsed < NVD_REQUEST_DELAY:
+        wait_time = NVD_REQUEST_DELAY - elapsed
+        logger.info(f"[RATE LIMIT] Waiting {wait_time:.1f}s before next NVD request (max {NVD_REQUEST_DELAY}s between requests)")
+        time.sleep(wait_time)
+    
+    last_nvd_request_time = time.time()
 
 
 def normalize_for_nvd(name: str) -> str:
@@ -267,6 +289,13 @@ class NVDClient:
             # Try multiple keyword variations (but stop after first success)
             keywords = get_cpe_keywords(package_name)
             all_cves = {}  # Use dict to avoid duplicates by CVE ID
+            
+            if not keywords:
+                logger.debug(f"No valid keywords for package: {package_name}")
+                return []
+            
+            # Enforce rate limiting: 5 second delay before first request
+            wait_for_rate_limit()
             
             for keyword_idx, keyword in enumerate(keywords):
                 params = {
