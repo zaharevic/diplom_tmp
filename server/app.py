@@ -19,7 +19,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Import NVD module
-from nvd import NVDClient, print_nvd_log_summary
+from nvd import NVDClient, print_nvd_log_summary, normalize_for_nvd
 from dashboard import create_dashboard_route
 
 # Check for -nvd-log flag
@@ -312,6 +312,93 @@ async def scan_host(hostname: str):
         "total_software": checked,
         "vulnerable_count": len(vulnerable),
         "vulnerable_packages": vulnerable,
+    })
+
+
+@app.get("/api/packages")
+async def get_packages():
+    """
+    Get all unique packages with their normalized names and CVE counts.
+    Used for package management UI.
+    """
+    with get_db() as conn:
+        c = conn.cursor()
+        # Get unique packages with count and CVE status
+        c.execute("""
+            SELECT DISTINCT name
+            FROM software
+            ORDER BY name
+        """)
+        packages = c.fetchall()
+    
+    result = []
+    for (pkg_name,) in packages:
+        normalized = normalize_for_nvd(pkg_name)
+        
+        # Check cache for CVE counts
+        cve_check = nvd_client.check_package(pkg_name)
+        
+        result.append({
+            "original_name": pkg_name,
+            "normalized_name": normalized,
+            "cves_found": cve_check["cves_found"],
+            "cvss_max": cve_check["cvss_max"],
+            "cached": cve_check["cached"],
+            "vulnerable": cve_check["vulnerable"],
+        })
+    
+    logger.debug(f"Retrieved {len(result)} packages for management UI")
+    return JSONResponse(result)
+
+
+@app.post("/api/packages/rescan")
+async def rescan_package(request: Request):
+    """
+    Update package name and rescan NVD with new name.
+    Used when user corrects a package name.
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+    
+    original_name = payload.get("original_name")
+    new_name = payload.get("new_name")
+    
+    if not original_name or not new_name:
+        raise HTTPException(status_code=400, detail="original_name and new_name required")
+    
+    logger.info(f"Package rename requested: {original_name} -> {new_name}")
+    
+    # Update all references to this package in database
+    with get_db() as conn:
+        c = conn.cursor()
+        c.execute("UPDATE software SET name = ? WHERE name = ?", (new_name, original_name))
+        conn.commit()
+        updated_count = c.rowcount
+    
+    logger.info(f"Updated {updated_count} software records from {original_name} to {new_name}")
+    
+    # Clear cache for this package and rescan
+    with nvd_client.cache._get_conn() as conn:
+        c = conn.cursor()
+        c.execute("DELETE FROM cve_cache WHERE package_name = ?", (original_name,))
+        conn.commit()
+    
+    # Perform fresh NVD query with new name
+    result = nvd_client.check_package(new_name)
+    
+    logger.info(
+        f"Rescan complete for {new_name}: cves_found={result['cves_found']}, "
+        f"cvss_max={result['cvss_max']}"
+    )
+    
+    return JSONResponse({
+        "success": True,
+        "original_name": original_name,
+        "new_name": new_name,
+        "updated_records": updated_count,
+        "cve_result": result,
     })
 
 

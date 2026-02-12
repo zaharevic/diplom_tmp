@@ -324,49 +324,276 @@ def get_dashboard_html():
                 <div id="loading" style="display: none;">Loading...</div>
             </div>
             
+            <div class="section">
+                <h2>🛠️ Package Manager (NVD Query Optimization)</h2>
+                <p style="margin-bottom: 15px; color: #666; font-size: 14px;">
+                    ℹ️ Review package names and correct any that were poorly normalized. Click "✓ OK" to keep as-is, or "✏️ Edit" to correct the name and rescan NVD.
+                </p>
+                <div id="packagesContainer" style="max-height: 600px; overflow-y: auto;">
+                    <p style="text-align: center; color: #999;">Loading packages...</p>
+                </div>
+            </div>
+            
             <div class="footer">
                 <p>Vulnerability Collector • Last updated: {recent_reports[0]['received_at'] if recent_reports else 'N/A'}</p>
             </div>
         </div>
         
+        <style>
+            .package-item {{
+                background: #f9f9f9;
+                border: 1px solid #ddd;
+                border-radius: 8px;
+                padding: 15px;
+                margin-bottom: 10px;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                gap: 15px;
+            }}
+            
+            .package-item.vulnerable {{
+                background: #fff3e0;
+                border-color: #ffb74d;
+            }}
+            
+            .package-info {{
+                flex: 1;
+            }}
+            
+            .package-original {{
+                font-weight: 600;
+                color: #333;
+                margin-bottom: 5px;
+            }}
+            
+            .package-normalized {{
+                font-size: 12px;
+                color: #666;
+                margin-bottom: 3px;
+            }}
+            
+            .package-cve {{
+                font-size: 12px;
+                color: #999;
+            }}
+            
+            .package-cve.found {{
+                color: #d32f2f;
+                font-weight: 600;
+            }}
+            
+            .package-actions {{
+                display: flex;
+                gap: 8px;
+            }}
+            
+            .btn-small {{
+                padding: 8px 12px;
+                border: 1px solid #ddd;
+                background: white;
+                border-radius: 5px;
+                cursor: pointer;
+                font-size: 13px;
+                font-weight: 500;
+                transition: all 0.2s;
+            }}
+            
+            .btn-ok {{
+                background: #4caf50;
+                color: white;
+                border: none;
+            }}
+            
+            .btn-ok:hover {{
+                background: #45a049;
+            }}
+            
+            .btn-edit {{
+                background: #2196f3;
+                color: white;
+                border: none;
+            }}
+            
+            .btn-edit:hover {{
+                background: #0b7dda;
+            }}
+            
+            .edit-form {{
+                display: none;
+                background: #e3f2fd;
+                padding: 12px;
+                border-radius: 5px;
+                margin-top: 10px;
+            }}
+            
+            .edit-form input {{
+                width: 100%;
+                padding: 8px 12px;
+                border: 1px solid #2196f3;
+                border-radius: 4px;
+                margin-bottom: 8px;
+                font-size: 13px;
+            }}
+            
+            .edit-form button {{
+                padding: 6px 12px;
+                margin-right: 5px;
+                font-size: 12px;
+            }}
+            
+            .btn-save {{
+                background: #28a745;
+                color: white;
+                border: none;
+                cursor: pointer;
+            }}
+            
+            .btn-save:hover {{
+                background: #218838;
+            }}
+            
+            .btn-cancel {{
+                background: #dc3545;
+                color: white;
+                border: none;
+                cursor: pointer;
+            }}
+            
+            .btn-cancel:hover {{
+                background: #c82333;
+            }}
+            
+            .status-message {{
+                font-size: 12px;
+                margin-top: 5px;
+                padding: 8px;
+                border-radius: 4px;
+            }}
+            
+            .status-success {{
+                background: #d4edda;
+                color: #155724;
+                border: 1px solid #c3e6cb;
+            }}
+            
+            .status-error {{
+                background: #f8d7da;
+                color: #721c24;
+                border: 1px solid #f5c6cb;
+            }}
+            
+            .status-loading {{
+                background: #d1ecf1;
+                color: #0c5460;
+                border: 1px solid #bee5eb;
+            }}
+        </style>
+        
         <script>
-            async function querySoftware() {{
-                const hostname = document.getElementById('hostSelect').value;
-                if (!hostname) {{
-                    document.getElementById('softwareTable').style.display = 'none';
+            async function loadPackages() {{
+                try {{
+                    const response = await fetch('/api/packages');
+                    const packages = await response.json();
+                    
+                    const container = document.getElementById('packagesContainer');
+                    container.innerHTML = '';
+                    
+                    packages.forEach(pkg => {{
+                        const isVulnerable = pkg.cves_found > 0;
+                        const item = document.createElement('div');
+                        item.className = 'package-item' + (isVulnerable ? ' vulnerable' : '');
+                        item.id = `pkg-${{pkg.original_name}}`;
+                        
+                        const cveStatus = isVulnerable 
+                            ? `<span class="package-cve found">⚠️ ${{pkg.cves_found}} CVEs (CVSS: ${{pkg.cvss_max.toFixed(1)}})</span>`
+                            : '<span class="package-cve">✓ No CVEs</span>';
+                        
+                        item.innerHTML = `
+                            <div class="package-info">
+                                <div class="package-original">📦 ${{pkg.original_name}}</div>
+                                <div class="package-normalized">→ Normalized: <code>${{pkg.normalized_name}}</code></div>
+                                <div>${{cveStatus}}</div>
+                            </div>
+                            <div class="package-actions">
+                                <button class="btn-small btn-ok" onclick="markOk('${{pkg.original_name}}')">✓ OK</button>
+                                <button class="btn-small btn-edit" onclick="toggleEdit('${{pkg.original_name}}')">✏️ Edit</button>
+                            </div>
+                            <div class="edit-form" id="form-${{pkg.original_name}}">
+                                <input type="text" id="input-${{pkg.original_name}}" placeholder="Enter corrected name" value="${{pkg.original_name}}">
+                                <button class="btn-small btn-save" onclick="savePackage('${{pkg.original_name}}')">💾 Save & Rescan</button>
+                                <button class="btn-small btn-cancel" onclick="toggleEdit('${{pkg.original_name}}')">✕ Cancel</button>
+                                <div id="status-${{pkg.original_name}}"></div>
+                            </div>
+                        `;
+                        
+                        container.appendChild(item);
+                    }});
+                    
+                    if (packages.length === 0) {{
+                        container.innerHTML = '<p style="text-align: center; color: #999;">No packages found</p>';
+                    }}
+                }} catch (error) {{
+                    console.error('Error loading packages:', error);
+                    document.getElementById('packagesContainer').innerHTML = '<p style="color: #d32f2f;">Error loading packages</p>';
+                }}
+            }}
+            
+            function toggleEdit(originalName) {{
+                const form = document.getElementById(`form-${{originalName}}`);
+                form.style.display = form.style.display === 'none' ? 'block' : 'none';
+            }}
+            
+            async function savePackage(originalName) {{
+                const newName = document.getElementById(`input-${{originalName}}`).value.trim();
+                if (!newName) {{
+                    alert('Please enter a package name');
                     return;
                 }}
                 
-                document.getElementById('loading').style.display = 'block';
-                document.getElementById('softwareTable').style.display = 'none';
+                const statusDiv = document.getElementById(`status-${{originalName}}`);
+                statusDiv.className = 'status-message status-loading';
+                statusDiv.textContent = '⏳ Rescanning...';
                 
                 try {{
-                    const response = await fetch(`/api/software?hostname=${{hostname}}&limit=500`);
-                    const data = await response.json();
+                    const response = await fetch('/api/packages/rescan', {{
+                        method: 'POST',
+                        headers: {{'Content-Type': 'application/json'}},
+                        body: JSON.stringify({{
+                            original_name: originalName,
+                            new_name: newName
+                        }})
+                    }});
                     
-                    const tbody = document.getElementById('softwareBody');
-                    tbody.innerHTML = '';
+                    if (!response.ok) throw new Error('Rescan failed');
                     
-                    if (data.software.length === 0) {{
-                        tbody.innerHTML = '<tr><td colspan="2">No packages found</td></tr>';
-                    }} else {{
-                        data.software.forEach(pkg => {{
-                            const row = `<tr>
-                                <td>${{pkg.name}}</td>
-                                <td>${{pkg.version || 'N/A'}}</td>
-                            </tr>`;
-                            tbody.innerHTML += row;
-                        }});
-                    }}
+                    const result = await response.json();
                     
-                    document.getElementById('softwareTable').style.display = 'block';
+                    statusDiv.className = 'status-message status-success';
+                    statusDiv.innerHTML = `✓ Updated! Found ${{result.cve_result.cves_found}} CVE(s). Reloading...`;
+                    
+                    setTimeout(() => loadPackages(), 2000);
                 }} catch (error) {{
                     console.error('Error:', error);
-                    alert('Error loading software data');
-                }} finally {{
-                    document.getElementById('loading').style.display = 'none';
+                    statusDiv.className = 'status-message status-error';
+                    statusDiv.textContent = '✕ Error: ' + error.message;
                 }}
             }}
+            
+            async function markOk(originalName) {{
+                // Just close the edit form and show success
+                const item = document.getElementById(`pkg-${{originalName}}`);
+                item.style.opacity = '0.6';
+                setTimeout(() => {{
+                    item.style.opacity = '1';
+                }}, 500);
+            }}
+            
+            // Load packages when page loads
+            document.addEventListener('DOMContentLoaded', loadPackages);
+            
+            // Refresh packages every 30 seconds
+            setInterval(loadPackages, 30000);
         </script>
     </body>
     </html>
