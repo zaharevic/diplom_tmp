@@ -93,7 +93,9 @@ def get_dashboard_html():
         </tr>''' for p in vulnerable_packages
     ])
     
-    html = f"""
+    last_updated = recent_reports[0]['received_at'] if recent_reports else 'N/A'
+
+    html = """
     <!DOCTYPE html>
     <html lang="en">
     <head>
@@ -343,8 +345,8 @@ def get_dashboard_html():
                 </div>
             </div>
             
-            <div class="footer">
-                <p>Vulnerability Collector • Last updated: {recent_reports[0]['received_at'] if recent_reports else 'N/A'}</p>
+                <div class="footer">
+                <p>Vulnerability Collector • Last updated: {LAST_UPDATED}</p>
             </div>
         </div>
         
@@ -699,7 +701,16 @@ def get_dashboard_html():
     </body>
     </html>
     """
-    
+    # Replace placeholders with actual values. Using .replace keeps all JS/CSS braces literal.
+    html = html.replace('{reports_count}', str(reports_count)) \
+               .replace('{hosts_count}', str(hosts_count)) \
+               .replace('{software_count:,}', f"{software_count:,}") \
+               .replace('{vulnerable_count}', str(vulnerable_count)) \
+               .replace('{reports_rows}', reports_rows) \
+               .replace('{vuln_rows}', vuln_rows) \
+               .replace('{hosts_options}', hosts_options) \
+               .replace('{LAST_UPDATED}', str(last_updated))
+
     return html
 
 
