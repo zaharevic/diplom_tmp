@@ -367,17 +367,27 @@ async def get_packages():
     result = []
     for (pkg_name,) in packages:
         normalized = normalize_for_nvd(pkg_name)
-        
-        # Check cache for CVE counts
-        cve_check = nvd_client.check_package(pkg_name)
-        
+
+        # Use cached results only to avoid triggering live NVD API queries
+        cached = nvd_client.cache.get_cached_result(pkg_name)
+        if cached:
+            cves_found = cached.get("cves_found", 0)
+            cvss_max = cached.get("cvss_max", 0)
+            vulnerable = cves_found > 0
+            was_cached = True
+        else:
+            cves_found = 0
+            cvss_max = 0
+            vulnerable = False
+            was_cached = False
+
         result.append({
             "original_name": pkg_name,
             "normalized_name": normalized,
-            "cves_found": cve_check["cves_found"],
-            "cvss_max": cve_check["cvss_max"],
-            "cached": cve_check["cached"],
-            "vulnerable": cve_check["vulnerable"],
+            "cves_found": cves_found,
+            "cvss_max": cvss_max,
+            "cached": was_cached,
+            "vulnerable": vulnerable,
         })
     
     logger.debug(f"Retrieved {len(result)} packages for management UI")
