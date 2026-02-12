@@ -36,12 +36,13 @@ VERBOSE_NVD = os.environ.get("NVD_VERBOSE", "").lower() not in ("", "0", "false"
 def normalize_for_nvd(name: str) -> str:
     """
     Normalize package name for NVD API queries.
-    NVD expects lowercase, alphanumeric + dash/underscore format.
+    Extracts core product name, removes versions, architectures, and suffixes.
     
     Examples:
-    - "Python" -> "python"
-    - "Microsoft Visual Studio" -> "visual_studio" or lookup mapping
-    - "Lib@$h" -> "libh"
+    - "7-zip_25_01_x64" -> "7-zip"
+    - "Java 8 Update 401 64-bit" -> "java"
+    - "Microsoft Edge" -> "microsoft edge"
+    - "Python 3.11" -> "python"
     """
     if not name:
         return ""
@@ -49,35 +50,115 @@ def normalize_for_nvd(name: str) -> str:
     # Convert to lowercase
     name = name.lower().strip()
     
-    # Remove/replace common non-alphanumeric chars
-    # Keep only letters, numbers, dash, underscore
-    name = re.sub(r"[^a-z0-9\-_]", "_", name)
+    # Remove architecture qualifiers
+    name = re.sub(r'\b(x86|x64|x86-64|i686|arm|arm64|amd64|ia64|32-?bit|64-?bit)\b', '', name)
     
-    # Remove trailing/leading underscores and dashes
-    name = name.strip("_-")
+    # Remove common suffixes/qualifiers: update, patch, redistrib*, runtime, etc.
+    name = re.sub(r'\b(update|patch|redistributable|runtime|bin|src|source|alpha|beta|rc|hotfix|sp\d+)\b', '', name)
     
-    # Collapse multiple underscores
-    name = re.sub(r"_+", "_", name)
+    # Remove version patterns: numbers after dash/underscore/space followed by numbers
+    # e.g., "java_8_update_401", "_2024", "-v1.2.3"
+    name = re.sub(r'[\s_-]v?\d+[\d._]*\b', '', name)
     
-    return name
+    # Remove version info in parentheses: (v1.0), (2024), etc.
+    name = re.sub(r'\s*\([^)]*\d+[^)]*\)', '', name)
+    
+    # Clean up special chars but preserve spaces and dashes for readability
+    # Replace most special chars with spaces, keep alphanumerics, dash, underscore
+    name = re.sub(r'[^a-z0-9\s\-_]', ' ', name)
+    
+    # Replace underscores with spaces for better matching
+    name = name.replace('_', ' ')
+    
+    # Remove extra whitespace
+    name = ' '.join(name.split())
+    
+    # Keep only the first 2-3 meaningful words for better NVD matching
+    # This helps by not sending overly specific package names
+    words = name.split()
+    if len(words) > 3:
+        # For package names like "microsoft office ltsc 2024 ru" -> keep "microsoft office"
+        # For "visual c 2010 x64 redistributable" -> keep "visual c"
+        # Get first N words that are not suspicious version indicators
+        core_words = []
+        for word in words[:4]:
+            # Skip if word looks like it might be a leftover version/arch (all numbers or too short)
+            if word and len(word) > 1 and not word.isdigit():
+                core_words.append(word)
+        name = ' '.join(core_words[:3]) if core_words else words[0]
+    
+    # Final cleanup: strip and return
+    name = name.strip()
+    
+    return name if name else "unknown"
 
 
 def get_cpe_keywords(name: str) -> List[str]:
     """
     Generate alternative search keywords for NVD.
-    Some packages have different names in NVD (e.g., "Python" vs "python", "OpenSSL" vs "openssl").
+    Tries multiple variations: normalized name, individual words, alternatives.
     """
-    keywords = [normalize_for_nvd(name)]
+    normalized = normalize_for_nvd(name)
+    keywords = [normalized]
     
-    # Add common variations
-    if "python" in keywords[0]:
-        keywords.extend(["python", "cpython"])
-    if "open" in keywords[0] and "ssl" in keywords[0]:
-        keywords.extend(["openssl"])
-    if "visual" in keywords[0] and "studio" in keywords[0]:
-        keywords.append("visual_studio_code")
+    # Also try with underscores for NVD compatibility
+    normalized_underscore = normalized.replace(' ', '_')
+    if normalized_underscore != normalized:
+        keywords.append(normalized_underscore)
     
-    return list(set(keywords))  # Remove duplicates
+    # Try individual words (in case multi-word name doesn't match)
+    words = normalized.split()
+    if len(words) > 1:
+        # Add first word (main product name)
+        keywords.append(words[0])
+        # Add pairs of first two words
+        keywords.append('_'.join(words[:2]))
+        keywords.append(' '.join(words[:2]))
+    
+    # Add common product name variations
+    lower_norm = normalized.lower()
+    
+    # Microsoft products
+    if 'microsoft' in lower_norm and 'office' in lower_norm:
+        keywords.extend(['office', 'microsoft office'])
+    elif 'microsoft' in lower_norm and 'edge' in lower_norm:
+        keywords.extend(['edge', 'chromium'])
+    elif 'visual' in lower_norm and 'studio' in lower_norm:
+        keywords.extend(['visual studio', 'visual_studio'])
+    elif 'visual' in lower_norm and 'c' in lower_norm:
+        keywords.extend(['visual c', 'vc', 'msvcrt'])
+    
+    # Java
+    if 'java' in lower_norm:
+        keywords.append('jre')
+        if 'update' not in lower_norm:  # Avoid "java update" 
+            keywords.extend(['oracle java', 'jdk'])
+    
+    # Python
+    if 'python' in lower_norm:
+        keywords.extend(['cpython', 'python'])
+    
+    # Git
+    if 'git' in lower_norm:
+        keywords.append('git-scm')
+    
+    # 7-Zip
+    if '7' in lower_norm or 'zip' in lower_norm:
+        keywords.extend(['7-zip', '7zip', 'sevenzip'])
+    
+    # Common name corrections
+    if lower_norm == 'discord':
+        keywords.append('discord')
+    
+    # Remove duplicates and empty strings, preserve order
+    seen = set()
+    result = []
+    for kw in keywords:
+        if kw and kw.lower() not in seen:
+            seen.add(kw.lower())
+            result.append(kw)
+    
+    return result
 
 
 class NVDCache:
