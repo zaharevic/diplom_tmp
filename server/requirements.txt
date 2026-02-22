@@ -1,3 +1,4 @@
 fastapi
 uvicorn[standard]
-requestspython-multipart
+requests
+python-multipart
