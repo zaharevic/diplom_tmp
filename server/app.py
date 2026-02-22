@@ -226,6 +226,10 @@ def init_db():
         """)
         c.execute("CREATE INDEX IF NOT EXISTS idx_software_management_status ON software_management(status)")
         
+        # Fix any existing records with incorrect status (migration)
+        c.execute("UPDATE software_management SET status = 'new' WHERE status IS NULL OR status = ''")
+        c.execute("UPDATE software_management SET status = 'new' WHERE status NOT IN ('new', 'in_task', 'ignore')")
+        
         # Table for scan queue tracking
         c.execute("""
             CREATE TABLE IF NOT EXISTS scan_queue (
