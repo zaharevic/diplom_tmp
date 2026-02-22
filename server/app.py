@@ -24,7 +24,7 @@ from nvd import NVDClient, print_nvd_log_summary, normalize_for_nvd
 from auth import create_session, is_session_valid, invalidate_session, verify_password
 from pages import (
     get_login_page, get_dashboard_page, get_hosts_page, 
-    get_packages_page
+    get_packages_page, get_software_management_page
 )
 
 # Check for -nvd-log flag
@@ -175,6 +175,12 @@ async def packages_page():
     return get_packages_page()
 
 
+@app.get("/software-management", response_class=HTMLResponse)
+async def software_management_page():
+    """Render software management page."""
+    return get_software_management_page()
+
+
 
 def init_db():
     """Initialize database schema."""
@@ -205,6 +211,41 @@ def init_db():
         """)
         c.execute("CREATE INDEX IF NOT EXISTS idx_software_hostname ON software(hostname)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_software_name ON software(name)")
+        
+        # Table for software management (status, normalized names for NVD)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS software_management (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                original_name TEXT NOT NULL UNIQUE,
+                normalized_for_nvd TEXT NOT NULL,
+                status TEXT DEFAULT 'new',
+                comment TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        c.execute("CREATE INDEX IF NOT EXISTS idx_software_management_status ON software_management(status)")
+        
+        # Table for scan queue tracking
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS scan_queue (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                hostname TEXT NOT NULL,
+                report_id INTEGER,
+                status TEXT DEFAULT 'pending',
+                started_at TEXT,
+                completed_at TEXT,
+                total_packages INTEGER DEFAULT 0,
+                checked_packages INTEGER DEFAULT 0,
+                vulnerable_count INTEGER DEFAULT 0,
+                error_message TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (report_id) REFERENCES reports(id) ON DELETE SET NULL
+            )
+        """)
+        c.execute("CREATE INDEX IF NOT EXISTS idx_scan_queue_hostname ON scan_queue(hostname)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_scan_queue_status ON scan_queue(status)")
+        
         conn.commit()
 
 
@@ -583,6 +624,257 @@ async def rescan_package(request: Request):
         "updated_records": updated_count,
         "cve_result": result,
     })
+
+
+# ==================== SOFTWARE MANAGEMENT API ====================
+
+@app.get("/api/software-management")
+async def get_software_management():
+    """Get all unique software with their management status and normalized NVD names."""
+    with get_db() as conn:
+        c = conn.cursor()
+        
+        # Get all unique software names from reports
+        c.execute("""
+            SELECT DISTINCT name FROM software ORDER BY name
+        """)
+        packages = [row[0] for row in c.fetchall()]
+        
+        result = []
+        for pkg_name in packages:
+            # Check if this package has management settings
+            c.execute("""
+                SELECT normalized_for_nvd, status, comment FROM software_management 
+                WHERE original_name = ?
+            """, (pkg_name,))
+            mgmt_row = c.fetchone()
+            
+            # Get cached CVE status
+            cached = nvd_client.cache.get_cached_result(pkg_name)
+            
+            if mgmt_row:
+                normalized = mgmt_row[0]
+                status = mgmt_row[1]
+                comment = mgmt_row[2]
+            else:
+                normalized = normalize_for_nvd(pkg_name)
+                status = "new"
+                comment = None
+            
+            cves_found = cached.get("cves_found", 0) if cached else 0
+            
+            result.append({
+                "original_name": pkg_name,
+                "normalized_for_nvd": normalized,
+                "status": status,
+                "comment": comment,
+                "cves_found": cves_found,
+                "cached": cached is not None,
+            })
+    
+    logger.debug(f"Retrieved {len(result)} software packages for management")
+    return JSONResponse(result)
+
+
+@app.post("/api/software-management/update")
+async def update_software_management(request: Request):
+    """Update software management settings (status, normalized name)."""
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+    
+    original_name = payload.get("original_name")
+    normalized_for_nvd = payload.get("normalized_for_nvd")
+    status = payload.get("status")  # new, in_task, ignore
+    comment = payload.get("comment", "")
+    
+    if not original_name:
+        raise HTTPException(status_code=400, detail="original_name required")
+    
+    if status not in ("new", "in_task", "ignore"):
+        raise HTTPException(status_code=400, detail="status must be: new, in_task, or ignore")
+    
+    logger.info(f"Software management update: {original_name} -> status={status}, normalized={normalized_for_nvd}")
+    
+    with get_db() as conn:
+        c = conn.cursor()
+        
+        # Insert or update management record
+        if not normalized_for_nvd:
+            normalized_for_nvd = normalize_for_nvd(original_name)
+        
+        c.execute("""
+            INSERT INTO software_management (original_name, normalized_for_nvd, status, comment, updated_at)
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(original_name) DO UPDATE SET
+                normalized_for_nvd = ?,
+                status = ?,
+                comment = ?,
+                updated_at = CURRENT_TIMESTAMP
+        """, (original_name, normalized_for_nvd, status, comment, normalized_for_nvd, status, comment))
+        
+        conn.commit()
+    
+    return JSONResponse({
+        "success": True,
+        "original_name": original_name,
+        "status": status,
+        "normalized_for_nvd": normalized_for_nvd,
+    })
+
+
+@app.post("/api/force-check")
+async def force_check_package(request: Request):
+    """Force check a package against NVD API, ignoring cache."""
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+    
+    package_name = payload.get("package_name")
+    version = payload.get("version")
+    
+    if not package_name:
+        raise HTTPException(status_code=400, detail="package_name required")
+    
+    logger.info(f"Force check requested for: {package_name} v{version}")
+    
+    # Clear cache entry
+    with nvd_client.cache._get_conn() as conn:
+        c = conn.cursor()
+        c.execute("DELETE FROM cve_cache WHERE package_name = ? AND version = ?", 
+                  (package_name, version or ""))
+        conn.commit()
+    
+    # Perform fresh NVD query
+    result = nvd_client.check_package(package_name, version)
+    
+    logger.info(
+        f"Force check complete for {package_name}: cves_found={result['cves_found']}, "
+        f"cvss_max={result['cvss_max']}"
+    )
+    
+    return JSONResponse(result)
+
+
+@app.get("/api/scan-queue")
+async def get_scan_queue():
+    """Get current scan queue status."""
+    with get_db() as conn:
+        c = conn.cursor()
+        
+        # Get pending and in-progress scans
+        c.execute("""
+            SELECT id, hostname, status, started_at, total_packages, checked_packages, 
+                   vulnerable_count, created_at
+            FROM scan_queue
+            WHERE status IN ('pending', 'processing')
+            ORDER BY created_at DESC
+            LIMIT 50
+        """)
+        queue_items = [dict(row) for row in c.fetchall()]
+        
+        # Get recent completed scans
+        c.execute("""
+            SELECT id, hostname, status, completed_at, total_packages, checked_packages, 
+                   vulnerable_count, created_at
+            FROM scan_queue
+            WHERE status = 'completed'
+            ORDER BY completed_at DESC
+            LIMIT 10
+        """)
+        completed_items = [dict(row) for row in c.fetchall()]
+    
+    logger.debug(f"Retrieved scan queue: {len(queue_items)} active, {len(completed_items)} recent")
+    
+    return JSONResponse({
+        "active": queue_items,
+        "recent_completed": completed_items,
+    })
+
+
+@app.post("/api/scan-queue/add")
+async def add_to_scan_queue(request: Request):
+    """Add a host scan to the queue."""
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+    
+    hostname = payload.get("hostname")
+    report_id = payload.get("report_id")
+    
+    if not hostname:
+        raise HTTPException(status_code=400, detail="hostname required")
+    
+    logger.info(f"Adding to scan queue: {hostname} (report_id={report_id})")
+    
+    with get_db() as conn:
+        c = conn.cursor()
+        c.execute("""
+            INSERT INTO scan_queue (hostname, report_id, status, created_at)
+            VALUES (?, ?, 'pending', CURRENT_TIMESTAMP)
+        """, (hostname, report_id))
+        conn.commit()
+        queue_id = c.lastrowid
+    
+    return JSONResponse({
+        "success": True,
+        "queue_id": queue_id,
+        "hostname": hostname,
+        "status": "pending",
+    })
+
+
+@app.post("/api/scan-queue/update")
+async def update_scan_queue(request: Request):
+    """Update scan queue item status."""
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+    
+    queue_id = payload.get("queue_id")
+    status = payload.get("status")  # pending, processing, completed, failed
+    checked = payload.get("checked_packages", 0)
+    vulnerable = payload.get("vulnerable_count", 0)
+    total = payload.get("total_packages", 0)
+    error = payload.get("error_message")
+    
+    if not queue_id or not status:
+        raise HTTPException(status_code=400, detail="queue_id and status required")
+    
+    logger.debug(f"Updating scan queue {queue_id}: status={status}")
+    
+    with get_db() as conn:
+        c = conn.cursor()
+        
+        if status == "processing":
+            c.execute("""
+                UPDATE scan_queue 
+                SET status = ?, started_at = CURRENT_TIMESTAMP, total_packages = ?
+                WHERE id = ?
+            """, (status, total, queue_id))
+        elif status == "completed":
+            c.execute("""
+                UPDATE scan_queue 
+                SET status = ?, completed_at = CURRENT_TIMESTAMP, 
+                    checked_packages = ?, vulnerable_count = ?
+                WHERE id = ?
+            """, (status, checked, vulnerable, queue_id))
+        elif status == "failed":
+            c.execute("""
+                UPDATE scan_queue 
+                SET status = ?, completed_at = CURRENT_TIMESTAMP, error_message = ?
+                WHERE id = ?
+            """, (status, error, queue_id))
+        else:
+            c.execute("UPDATE scan_queue SET status = ? WHERE id = ?", (status, queue_id))
+        
+        conn.commit()
+    
+    return JSONResponse({"success": True, "queue_id": queue_id, "status": status})
 
 
 if __name__ == "__main__":

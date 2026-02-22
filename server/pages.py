@@ -344,6 +344,7 @@ def get_dashboard_page() -> str:
                     <li><a href="/dashboard" class="active">Dashboard</a></li>
                     <li><a href="/hosts">Hosts</a></li>
                     <li><a href="/packages">Packages</a></li>
+                    <li><a href="/software-management">Software Management</a></li>
                 </ul>
                 <form method="POST" action="/logout" style="margin:0;">
                     <button class="logout-btn">Logout</button>
@@ -626,6 +627,7 @@ def get_hosts_page() -> str:
                     <li><a href="/dashboard">Dashboard</a></li>
                     <li><a href="/hosts" class="active">Hosts</a></li>
                     <li><a href="/packages">Packages</a></li>
+                    <li><a href="/software-management">Software Management</a></li>
                 </ul>
                 <form method="POST" action="/logout" style="margin:0;">
                     <button class="logout-btn">Logout</button>
@@ -966,6 +968,7 @@ def get_packages_page() -> str:
                     <li><a href="/dashboard">Dashboard</a></li>
                     <li><a href="/hosts">Hosts</a></li>
                     <li><a href="/packages" class="active">Packages</a></li>
+                    <li><a href="/software-management">Software Management</a></li>
                 </ul>
                 <form method="POST" action="/logout" style="margin:0;">
                     <button class="logout-btn">Logout</button>
@@ -1088,6 +1091,531 @@ def get_packages_page() -> str:
                     statusDiv.innerHTML = `<div id="scanStatus" style="color:#d32f2f;">❌ Error: ${{err.message}}</div>`;
                 }}
             }}
+        </script>
+    </body>
+    </html>
+    """
+
+def get_software_management_page() -> str:
+    """Generate software management page with NVD name customization and status tracking."""
+    with get_db() as conn:
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM software_management WHERE status = 'new'")
+        new_count = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM software_management WHERE status = 'in_task'")
+        in_task_count = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM software_management WHERE status = 'ignore'")
+        ignore_count = c.fetchone()[0]
+    
+    return f"""
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Software Management - Vulnerability Collector</title>
+        <style>
+            * {{
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }}
+            
+            body {{
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                min-height: 100vh;
+                padding: 20px;
+            }}
+            
+            .navbar {{
+                background: white;
+                padding: 15px 0;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                margin-bottom: 30px;
+                border-radius: 5px;
+            }}
+            
+            .nav-container {{
+                max-width: 1400px;
+                margin: 0 auto;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                padding: 0 20px;
+            }}
+            
+            .nav-logo {{
+                font-size: 18px;
+                font-weight: bold;
+                color: #667eea;
+            }}
+            
+            .nav-links {{
+                display: flex;
+                gap: 20px;
+                list-style: none;
+            }}
+            
+            .nav-links a {{
+                text-decoration: none;
+                color: #333;
+                font-weight: 500;
+            }}
+            
+            .nav-links a.active {{
+                color: #667eea;
+                border-bottom: 2px solid #667eea;
+                padding-bottom: 3px;
+            }}
+            
+            .logout-btn {{
+                background: #d32f2f;
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 5px;
+                cursor: pointer;
+            }}
+            
+            .container {{
+                max-width: 1400px;
+                margin: 0 auto;
+            }}
+            
+            h1 {{
+                color: white;
+                margin-bottom: 30px;
+            }}
+            
+            .stats {{
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                gap: 15px;
+                margin-bottom: 30px;
+            }}
+            
+            .stat-card {{
+                background: white;
+                padding: 15px;
+                border-radius: 5px;
+                text-align: center;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            }}
+            
+            .stat-card .label {{
+                font-size: 12px;
+                color: #666;
+                text-transform: uppercase;
+                margin-bottom: 8px;
+            }}
+            
+            .stat-card .number {{
+                font-size: 28px;
+                font-weight: bold;
+                color: #667eea;
+            }}
+            
+            .section {{
+                background: white;
+                border-radius: 10px;
+                padding: 20px;
+                box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+                margin-bottom: 20px;
+            }}
+            
+            .section h2 {{
+                color: #333;
+                margin-bottom: 20px;
+                font-size: 18px;
+                border-bottom: 2px solid #667eea;
+                padding-bottom: 10px;
+            }}
+            
+            .filter-tabs {{
+                display: flex;
+                gap: 10px;
+                margin-bottom: 20px;
+                flex-wrap: wrap;
+            }}
+            
+            .filter-btn {{
+                padding: 8px 15px;
+                border: 2px solid #ddd;
+                background: white;
+                border-radius: 5px;
+                cursor: pointer;
+                font-weight: 500;
+                transition: all 0.3s;
+            }}
+            
+            .filter-btn.active {{
+                background: #667eea;
+                color: white;
+                border-color: #667eea;
+            }}
+            
+            .software-table {{
+                width: 100%;
+                border-collapse: collapse;
+                margin-top: 10px;
+            }}
+            
+            .software-table th {{
+                background: #f5f5f5;
+                padding: 12px;
+                text-align: left;
+                font-weight: 600;
+                color: #333;
+                border-bottom: 2px solid #ddd;
+            }}
+            
+            .software-table td {{
+                padding: 12px;
+                border-bottom: 1px solid #eee;
+            }}
+            
+            .software-table tr:hover {{
+                background: #f9f9f9;
+            }}
+            
+            .action-btns {{
+                display: flex;
+                gap: 8px;
+            }}
+            
+            .btn-small {{
+                padding: 6px 12px;
+                border: 1px solid #ddd;
+                background: white;
+                border-radius: 3px;
+                cursor: pointer;
+                font-size: 12px;
+                font-weight: 500;
+            }}
+            
+            .btn-edit {{
+                background: #2196f3;
+                color: white;
+                border: none;
+            }}
+            
+            .btn-force {{
+                background: #ff9800;
+                color: white;
+                border: none;
+            }}
+            
+            .btn-delete {{
+                background: #d32f2f;
+                color: white;
+                border: none;
+            }}
+            
+            .modal {{
+                display: none;
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                background: rgba(0,0,0,0.5);
+                z-index: 1000;
+                align-items: center;
+                justify-content: center;
+            }}
+            
+            .modal.active {{
+                display: flex;
+            }}
+            
+            .modal-content {{
+                background: white;
+                padding: 30px;
+                border-radius: 10px;
+                max-width: 500px;
+                width: 90%;
+            }}
+            
+            .form-group {{
+                margin-bottom: 15px;
+            }}
+            
+            .form-group label {{
+                display: block;
+                margin-bottom: 5px;
+                font-weight: 500;
+                color: #333;
+            }}
+            
+            .form-group input,
+            .form-group select,
+            .form-group textarea {{
+                width: 100%;
+                padding: 8px;
+                border: 1px solid #ddd;
+                border-radius: 5px;
+                font-size: 14px;
+            }}
+            
+            .modal-buttons {{
+                display: flex;
+                gap: 10px;
+                margin-top: 20px;
+            }}
+            
+            .modal-buttons button {{
+                flex: 1;
+                padding: 10px;
+                border: none;
+                border-radius: 5px;
+                cursor: pointer;
+                font-weight: 600;
+            }}
+            
+            .btn-save {{
+                background: #4caf50;
+                color: white;
+            }}
+            
+            .btn-cancel {{
+                background: #ddd;
+                color: #333;
+            }}
+            
+            .status-badge {{
+                display: inline-block;
+                padding: 4px 8px;
+                border-radius: 3px;
+                font-size: 12px;
+                font-weight: 600;
+            }}
+            
+            .status-new {{
+                background: #e3f2fd;
+                color: #1976d2;
+            }}
+            
+            .status-in_task {{
+                background: #f3e5f5;
+                color: #7b1fa2;
+            }}
+            
+            .status-ignore {{
+                background: #ffe0b2;
+                color: #e65100;
+            }}
+        </style>
+    </head>
+    <body>
+        <nav class="navbar">
+            <div class="nav-container">
+                <div class="nav-logo">🛡️ Vulnerability Collector</div>
+                <ul class="nav-links">
+                    <li><a href="/dashboard">Dashboard</a></li>
+                    <li><a href="/hosts">Hosts</a></li>
+                    <li><a href="/packages">Packages</a></li>
+                    <li><a href="/software-management" class="active">Software Management</a></li>
+                </ul>
+                <form method="POST" action="/logout" style="margin:0;">
+                    <button class="logout-btn">Logout</button>
+                </form>
+            </div>
+        </nav>
+        
+        <div class="container">
+            <h1>🔧 Software Management</h1>
+            
+            <div class="stats">
+                <div class="stat-card">
+                    <div class="label">New</div>
+                    <div class="number">{new_count}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="label">In Task</div>
+                    <div class="number">{in_task_count}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="label">Ignored</div>
+                    <div class="number">{ignore_count}</div>
+                </div>
+            </div>
+            
+            <div class="section">
+                <h2>📦 Manage Software</h2>
+                
+                <div class="filter-tabs">
+                    <button class="filter-btn active" onclick="filterByStatus('all')">All</button>
+                    <button class="filter-btn" onclick="filterByStatus('new')">New</button>
+                    <button class="filter-btn" onclick="filterByStatus('in_task')">In Task</button>
+                    <button class="filter-btn" onclick="filterByStatus('ignore')">Ignored</button>
+                </div>
+                
+                <table class="software-table">
+                    <thead>
+                        <tr>
+                            <th>Application Name</th>
+                            <th>NVD Query Name</th>
+                            <th>Status</th>
+                            <th>CVEs Found</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="softwareBody">
+                        <tr><td colspan="5" style="text-align:center; color:#999;">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        
+        <div class="modal" id="editModal">
+            <div class="modal-content">
+                <h2>Edit Software</h2>
+                <div class="form-group">
+                    <label>Application Name</label>
+                    <input type="text" id="origName" disabled style="background:#f5f5f5;">
+                </div>
+                <div class="form-group">
+                    <label>NVD Query Name</label>
+                    <input type="text" id="nvdName" placeholder="Name to send to NVD API">
+                </div>
+                <div class="form-group">
+                    <label>Status</label>
+                    <select id="statusSelect">
+                        <option value="new">New</option>
+                        <option value="in_task">In Task</option>
+                        <option value="ignore">Ignore</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Comment</label>
+                    <textarea id="comment" placeholder="Optional notes" rows="3"></textarea>
+                </div>
+                <div class="modal-buttons">
+                    <button class="btn-save" onclick="saveChanges()">Save</button>
+                    <button class="btn-cancel" onclick="closeEditModal()">Cancel</button>
+                </div>
+            </div>
+        </div>
+        
+        <script>
+            let allSoftware = [];
+            let currentFilter = 'all';
+            
+            async function loadSoftware() {{
+                try {{
+                    const resp = await fetch('/api/software-management');
+                    allSoftware = await resp.json();
+                    renderSoftware();
+                }} catch (err) {{
+                    console.error('Error loading software:', err);
+                    document.getElementById('softwareBody').innerHTML = '<tr><td colspan="5" style="color:#d32f2f;">Error loading data</td></tr>';
+                }}
+            }}
+            
+            function renderSoftware() {{
+                const filtered = currentFilter === 'all' 
+                    ? allSoftware 
+                    : allSoftware.filter(s => s.status === currentFilter);
+                
+                const tbody = document.getElementById('softwareBody');
+                if (filtered.length === 0) {{
+                    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; color:#999;">No software found</td></tr>';
+                    return;
+                }}
+                
+                tbody.innerHTML = filtered.map(sw => `
+                    <tr>
+                        <td><strong>${{sw.original_name}}</strong></td>
+                        <td><code>${{sw.normalized_for_nvd}}</code></td>
+                        <td><span class="status-badge status-${{sw.status}}">${{sw.status}}</span></td>
+                        <td>${{sw.cached ? '<span style="color:#d32f2f; font-weight:600;">' + sw.cves_found + ' CVE(s)</span>' : '<span style="color:#999;">-</span>'}}</td>
+                        <td>
+                            <div class="action-btns">
+                                <button class="btn-small btn-edit" onclick="openEditModal('${{sw.original_name}}', '${{sw.normalized_for_nvd}}', '${{sw.status}}', '${{(sw.comment || '').replace(/'/g, "&apos;")}}')">✏️ Edit</button>
+                                <button class="btn-small btn-force" onclick="forceCheck('${{sw.original_name}}')">⚡ Force Check</button>
+                            </div>
+                        </td>
+                    </tr>
+                `).join('');
+            }}
+            
+            function filterByStatus(status) {{
+                currentFilter = status;
+                document.querySelectorAll('.filter-btn').forEach(btn => btn.classList.remove('active'));
+                event.target.classList.add('active');
+                renderSoftware();
+            }}
+            
+            function openEditModal(name, nvd, status, comment) {{
+                document.getElementById('origName').value = name;
+                document.getElementById('nvdName').value = nvd;
+                document.getElementById('statusSelect').value = status;
+                document.getElementById('comment').value = comment;
+                document.getElementById('editModal').classList.add('active');
+            }}
+            
+            function closeEditModal() {{
+                document.getElementById('editModal').classList.remove('active');
+            }}
+            
+            async function saveChanges() {{
+                const origName = document.getElementById('origName').value;
+                const nvdName = document.getElementById('nvdName').value;
+                const status = document.getElementById('statusSelect').value;
+                const comment = document.getElementById('comment').value;
+                
+                try {{
+                    const resp = await fetch('/api/software-management/update', {{
+                        method: 'POST',
+                        headers: {{'Content-Type': 'application/json'}},
+                        body: JSON.stringify({{
+                            original_name: origName,
+                            normalized_for_nvd: nvdName,
+                            status: status,
+                            comment: comment
+                        }})
+                    }});
+                    
+                    if (resp.ok) {{
+                        alert('✓ Saved successfully');
+                        closeEditModal();
+                        loadSoftware();
+                    }} else {{
+                        alert('❌ Error saving changes');
+                    }}
+                }} catch (err) {{
+                    alert('Error: ' + err.message);
+                }}
+            }}
+            
+            async function forceCheck(packageName) {{
+                if (!confirm('Force recheck this package? (ignores cache)')) return;
+                
+                try {{
+                    const resp = await fetch('/api/force-check', {{
+                        method: 'POST',
+                        headers: {{'Content-Type': 'application/json'}},
+                        body: JSON.stringify({{ package_name: packageName }})
+                    }});
+                    
+                    const result = await resp.json();
+                    if (result.cves_found > 0) {{
+                        alert(`✓ Found ${{result.cves_found}} CVE(s), max CVSS: ${{result.cvss_max.toFixed(1)}}`);
+                    }} else {{
+                        alert('✓ No vulnerabilities found');
+                    }}
+                    loadSoftware();
+                }} catch (err) {{
+                    alert('❌ Force check failed: ' + err.message);
+                }}
+            }}
+            
+            // Load on page load
+            loadSoftware();
+            
+            // Refresh every 60 seconds
+            setInterval(loadSoftware, 60000);
         </script>
     </body>
     </html>
