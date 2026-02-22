@@ -1561,17 +1561,21 @@ def get_software_management_page() -> str:
             let currentFilter = 'all';
             let selectedPackages = new Set();
             
-            async function loadSoftware() {{
+            async function loadSoftwareData() {{
                 try {{
                     const resp = await fetch('/api/software-management');
                     allSoftware = await resp.json();
-                    selectedPackages.clear();
-                    document.getElementById('selectAll').checked = false;
-                    renderSoftware();
                 }} catch (err) {{
                     console.error('Error loading software:', err);
                     document.getElementById('softwareBody').innerHTML = '<tr><td colspan="6" style="color:#d32f2f;">Error loading data</td></tr>';
                 }}
+            }}
+            
+            async function loadSoftware() {{
+                await loadSoftwareData();
+                selectedPackages.clear();
+                document.getElementById('selectAll').checked = false;
+                renderSoftware();
             }}
             
             function renderSoftware() {{
@@ -1604,6 +1608,12 @@ def get_software_management_page() -> str:
                         </td>
                     </tr>
                 `).join('');
+                
+                // Restore checkboxes for selected packages
+                selectedPackages.forEach(pkgName => {{
+                    const checkbox = document.querySelector(`input[data-name="${{pkgName}}"]`);
+                    if (checkbox) checkbox.checked = true;
+                }});
                 
                 updateBulkActionsUI();
             }}
@@ -1756,18 +1766,24 @@ def get_software_management_page() -> str:
                     }} else {{
                         alert('✓ No vulnerabilities found');
                     }}
-                    loadSoftware();
+                    await refreshSoftware();
                 }} catch (err) {{
                     alert('❌ Force check failed: ' + err.message);
                 }}
             }}
             
+            async function refreshSoftware() {{
+                await loadSoftwareData();
+                renderSoftware();
+            }}
+            
             // Load on page load
             loadSoftware();
             
-            // Refresh every 60 seconds
-            setInterval(loadSoftware, 60000);
+            // Refresh every 60 seconds (without clearing selection)
+            setInterval(refreshSoftware, 60000);
         </script>
     </body>
     </html>
     """
+
