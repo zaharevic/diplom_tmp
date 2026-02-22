@@ -1675,26 +1675,28 @@ def get_software_management_page() -> str:
                 if (!confirm(`Set ${{count}} application(s) to ${{statusName}}?`)) return;
                 
                 try {{
-                    let successCount = 0;
-                    const promises = Array.from(selectedPackages).map(pkgName =>
-                        fetch('/api/software-management/update', {{
-                            method: 'POST',
-                            headers: {{'Content-Type': 'application/json'}},
-                            body: JSON.stringify({{
-                                original_name: pkgName,
-                                status: newStatus,
-                                comment: ''
-                            }})
-                        }}).then(r => {{
-                            if (r.ok) successCount++;
-                            return r;
-                        }})
-                    );
+                    // Build list of packages to update
+                    const packages = Array.from(selectedPackages).map(pkgName => ({{
+                        original_name: pkgName,
+                        status: newStatus,
+                        comment: ''
+                    }}));
                     
-                    await Promise.all(promises);
-                    alert(`✓ Updated ${{successCount}}/${{count}} application(s)`);
-                    clearSelection();
-                    loadSoftware();
+                    const resp = await fetch('/api/software-management/bulk-update', {{
+                        method: 'POST',
+                        headers: {{'Content-Type': 'application/json'}},
+                        body: JSON.stringify({{ packages: packages }})
+                    }});
+                    
+                    if (resp.ok) {{
+                        const result = await resp.json();
+                        alert(`✓ Updated ${{result.updated_count}} application(s)`);
+                        clearSelection();
+                        await refreshSoftware();
+                    }} else {{
+                        const error = await resp.json();
+                        alert('❌ Error: ' + (error.detail || 'Unknown error'));
+                    }}
                 }} catch (err) {{
                     alert('❌ Error: ' + err.message);
                 }}

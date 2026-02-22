@@ -724,6 +724,57 @@ async def update_software_management(request: Request):
     })
 
 
+@app.post("/api/software-management/bulk-update")
+async def bulk_update_software_management(request: Request):
+    """Bulk update multiple software packages (efficient for large batches)."""
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+    
+    packages = payload.get("packages", [])  # List of {original_name, status, normalized_for_nvd, comment}
+    
+    if not isinstance(packages, list) or len(packages) == 0:
+        raise HTTPException(status_code=400, detail="packages must be a non-empty list")
+    
+    # Validate all packages before processing
+    for pkg in packages:
+        if not pkg.get("original_name"):
+            raise HTTPException(status_code=400, detail="Each package must have original_name")
+        if pkg.get("status") not in ("new", "in_task", "ignore"):
+            raise HTTPException(status_code=400, detail="Each package status must be: new, in_task, or ignore")
+    
+    logger.info(f"Bulk update requested for {len(packages)} packages")
+    
+    with get_db() as conn:
+        c = conn.cursor()
+        
+        for pkg in packages:
+            original_name = pkg.get("original_name")
+            normalized_for_nvd = pkg.get("normalized_for_nvd") or normalize_for_nvd(original_name)
+            status = pkg.get("status")
+            comment = pkg.get("comment", "")
+            
+            c.execute("""
+                INSERT INTO software_management (original_name, normalized_for_nvd, status, comment, updated_at)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(original_name) DO UPDATE SET
+                    normalized_for_nvd = ?,
+                    status = ?,
+                    comment = ?,
+                    updated_at = CURRENT_TIMESTAMP
+            """, (original_name, normalized_for_nvd, status, comment, normalized_for_nvd, status, comment))
+        
+        conn.commit()
+    
+    logger.debug(f"Bulk update completed for {len(packages)} packages")
+    
+    return JSONResponse({
+        "success": True,
+        "updated_count": len(packages),
+    })
+
+
 @app.post("/api/force-check")
 async def force_check_package(request: Request):
     """Force check a package against NVD API, ignoring cache."""
