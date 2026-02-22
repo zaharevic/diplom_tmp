@@ -1,5 +1,5 @@
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Request, HTTPException, Response
+from fastapi.responses import JSONResponse, RedirectResponse, HTMLResponse
 import uvicorn
 import os
 import json
@@ -9,6 +9,7 @@ import time
 import sys
 from datetime import datetime, timezone
 from contextlib import contextmanager
+import socket
 
 # Configure logging
 logging.basicConfig(
@@ -20,7 +21,11 @@ logger = logging.getLogger(__name__)
 
 # Import NVD module
 from nvd import NVDClient, print_nvd_log_summary, normalize_for_nvd
-from dashboard import create_dashboard_route
+from auth import create_session, is_session_valid, invalidate_session, verify_password
+from pages import (
+    get_login_page, get_dashboard_page, get_hosts_page, 
+    get_packages_page
+)
 
 # Check for -nvd-log flag
 NVD_LOG = "-nvd-log" in sys.argv or os.environ.get("NVD_LOG") == "true"
@@ -29,13 +34,40 @@ if NVD_LOG:
 
 app = FastAPI()
 
-# Middleware for logging all HTTP requests
+# List of public routes (no authentication required)
+PUBLIC_ROUTES = {"/login", "/api/collect"}
+
+def get_session_id(request: Request) -> str:
+    """Extract session ID from cookie."""
+    return request.cookies.get("admin_session", "")
+
+def is_admin_authenticated(request: Request) -> bool:
+    """Check if user is authenticated admin."""
+    session_id = get_session_id(request)
+    return is_session_valid(session_id)
+
+# Middleware for logging and authentication
 @app.middleware("http")
-async def log_requests(request: Request, call_next):
-    """Log all incoming HTTP requests with response status."""
+async def auth_middleware(request: Request, call_next):
+    """Log requests and enforce authentication."""
     start_time = time.time()
     method = request.method
     path = request.url.path
+    
+    # Check if route requires authentication
+    is_public = path in PUBLIC_ROUTES or path.startswith("/api/collect")
+    is_admin_page = path.startswith(("/dashboard", "/hosts", "/packages", "/logout"))
+    is_api_call = path.startswith("/api/") and path not in PUBLIC_ROUTES
+    
+    # Redirect to login if accessing admin pages without auth
+    if is_admin_page and not is_admin_authenticated(request):
+        return RedirectResponse(url="/login", status_code=302)
+    
+    # For API calls (except collection), check X-API-KEY or session
+    if is_api_call and API_KEY:
+        provided_key = request.headers.get("x-api-key") or request.headers.get("X-API-KEY")
+        if provided_key != API_KEY and not is_admin_authenticated(request):
+            return JSONResponse({"error": "Invalid or missing API key"}, status_code=401)
     
     try:
         response = await call_next(request)
@@ -67,6 +99,80 @@ if NVD_API_KEY:
     logger.info(f"NVD_API_KEY configured for higher rate limits")
 else:
     logger.warning(f"NVD_API_KEY not set; using public NVD API (limited rate)")
+
+
+# ==================== AUTHENTICATION ROUTES ====================
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page():
+    """Render login page."""
+    return get_login_page().replace("{error_html}", "")
+
+
+@app.post("/login")
+async def login(request: Request, response: Response):
+    """Handle login form submission."""
+    try:
+        form_data = await request.form()
+        password = form_data.get("password", "")
+        
+        if verify_password(password):
+            session_id = create_session()
+            resp = RedirectResponse(url="/dashboard", status_code=302)
+            resp.set_cookie("admin_session", session_id, max_age=12*3600, httponly=True)
+            logger.info(f"Admin login successful")
+            return resp
+        else:
+            logger.warning(f"Failed login attempt with incorrect password")
+            error_html = '<div class="error">Incorrect password</div>'
+            return HTMLResponse(
+                get_login_page().replace("{error_html}", error_html),
+                status_code=401
+            )
+    except Exception as e:
+        logger.error(f"Login error: {e}")
+        return HTMLResponse(
+            get_login_page().replace("{error_html}", '<div class="error">Login error</div>'),
+            status_code=500
+        )
+
+
+@app.post("/logout")
+async def logout(request: Request):
+    """Handle logout."""
+    session_id = get_session_id(request)
+    if session_id:
+        invalidate_session(session_id)
+    response = RedirectResponse(url="/login", status_code=302)
+    response.delete_cookie("admin_session")
+    logger.info(f"Admin logout")
+    return response
+
+
+# ==================== ADMIN PAGES ====================
+
+@app.get("/", response_class=HTMLResponse)
+async def root():
+    """Redirect root to dashboard."""
+    return RedirectResponse(url="/dashboard", status_code=302)
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard():
+    """Render dashboard page."""
+    return get_dashboard_page()
+
+
+@app.get("/hosts", response_class=HTMLResponse)
+async def hosts_page():
+    """Render hosts management page."""
+    return get_hosts_page()
+
+
+@app.get("/packages", response_class=HTMLResponse)
+async def packages_page():
+    """Render package selection page."""
+    return get_packages_page()
 
 
 
@@ -180,6 +286,40 @@ async def collect(request: Request):
 
     logger.info(f"Report received from {host}: id={report_id}, software_count={len(software_list)}, saved to {path}")
     return JSONResponse({"status": "ok", "saved_to": path, "report_id": report_id})
+
+
+@app.get("/api/hosts/ping")
+async def ping_host(hostname: str):
+    """
+    Ping a host to check if it's online.
+    Returns online status based on ICMP/TCP ping.
+    """
+    if not hostname:
+        raise HTTPException(status_code=400, detail="hostname required")
+    
+    try:
+        # Try to resolve hostname and connect on port 22 (SSH) or 445 (SMB)
+        # If no response in 2 seconds, consider offline
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(2)
+        
+        # Try SSH first (port 22)
+        try:
+            result = sock.connect_ex((hostname, 22))
+            sock.close()
+            is_online = (result == 0)
+        except socket.gaierror:
+            # Hostname resolution failed
+            is_online = False
+        except Exception:
+            is_online = False
+        
+        logger.debug(f"Ping check for {hostname}: {'online' if is_online else 'offline'}")
+        return JSONResponse({"hostname": hostname, "online": is_online})
+    
+    except Exception as e:
+        logger.error(f"Error pinging {hostname}: {e}")
+        return JSONResponse({"hostname": hostname, "online": False})
 
 
 @app.get("/api/reports")
@@ -443,10 +583,6 @@ async def rescan_package(request: Request):
         "updated_records": updated_count,
         "cve_result": result,
     })
-
-
-# Initialize dashboard routes
-create_dashboard_route(app)
 
 
 if __name__ == "__main__":
