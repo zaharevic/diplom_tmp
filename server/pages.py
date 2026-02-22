@@ -1255,6 +1255,56 @@ def get_software_management_page() -> str:
                 border-color: #667eea;
             }}
             
+            .bulk-actions {{
+                display: none;
+                background: #f0f0f0;
+                padding: 15px;
+                border-radius: 5px;
+                margin-bottom: 15px;
+                align-items: center;
+                gap: 10px;
+                flex-wrap: wrap;
+            }}
+            
+            .bulk-actions.active {{
+                display: flex;
+            }}
+            
+            .bulk-selected {{
+                font-weight: 600;
+                color: #333;
+                margin-right: 10px;
+            }}
+            
+            .bulk-actions button {{
+                padding: 8px 15px;
+                border: none;
+                border-radius: 5px;
+                cursor: pointer;
+                font-weight: 600;
+                font-size: 13px;
+            }}
+            
+            .btn-set-task {{
+                background: #7b1fa2;
+                color: white;
+            }}
+            
+            .btn-set-ignore {{
+                background: #e65100;
+                color: white;
+            }}
+            
+            .btn-set-new {{
+                background: #1976d2;
+                color: white;
+            }}
+            
+            .btn-clear {{
+                background: #999;
+                color: white;
+            }}
+            
             .software-table {{
                 width: 100%;
                 border-collapse: collapse;
@@ -1279,6 +1329,17 @@ def get_software_management_page() -> str:
                 background: #f9f9f9;
             }}
             
+            .checkbox-col {{
+                width: 40px;
+                text-align: center;
+            }}
+            
+            .checkbox-col input {{
+                cursor: pointer;
+                width: 18px;
+                height: 18px;
+            }}
+            
             .action-btns {{
                 display: flex;
                 gap: 8px;
@@ -1294,20 +1355,8 @@ def get_software_management_page() -> str:
                 font-weight: 500;
             }}
             
-            .btn-edit {{
-                background: #2196f3;
-                color: white;
-                border: none;
-            }}
-            
             .btn-force {{
                 background: #ff9800;
-                color: white;
-                border: none;
-            }}
-            
-            .btn-delete {{
-                background: #d32f2f;
                 color: white;
                 border: none;
             }}
@@ -1451,9 +1500,18 @@ def get_software_management_page() -> str:
                     <button class="filter-btn" onclick="filterByStatus('ignore')">Ignored</button>
                 </div>
                 
+                <div class="bulk-actions" id="bulkActions">
+                    <span class="bulk-selected"><span id="selectedCount">0</span> selected</span>
+                    <button class="btn-set-task" onclick="applyBulkStatus('in_task')">📋 Set to In Task</button>
+                    <button class="btn-set-ignore" onclick="applyBulkStatus('ignore')">⛔ Set to Ignore</button>
+                    <button class="btn-set-new" onclick="applyBulkStatus('new')">✨ Set to New</button>
+                    <button class="btn-clear" onclick="clearSelection()">Clear Selection</button>
+                </div>
+                
                 <table class="software-table">
                     <thead>
                         <tr>
+                            <th class="checkbox-col"><input type="checkbox" id="selectAll" onchange="toggleSelectAll(this.checked)"></th>
                             <th>Application Name</th>
                             <th>NVD Query Name</th>
                             <th>Status</th>
@@ -1462,7 +1520,7 @@ def get_software_management_page() -> str:
                         </tr>
                     </thead>
                     <tbody id="softwareBody">
-                        <tr><td colspan="5" style="text-align:center; color:#999;">Loading...</td></tr>
+                        <tr><td colspan="6" style="text-align:center; color:#999;">Loading...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -1501,15 +1559,18 @@ def get_software_management_page() -> str:
         <script>
             let allSoftware = [];
             let currentFilter = 'all';
+            let selectedPackages = new Set();
             
             async function loadSoftware() {{
                 try {{
                     const resp = await fetch('/api/software-management');
                     allSoftware = await resp.json();
+                    selectedPackages.clear();
+                    document.getElementById('selectAll').checked = false;
                     renderSoftware();
                 }} catch (err) {{
                     console.error('Error loading software:', err);
-                    document.getElementById('softwareBody').innerHTML = '<tr><td colspan="5" style="color:#d32f2f;">Error loading data</td></tr>';
+                    document.getElementById('softwareBody').innerHTML = '<tr><td colspan="6" style="color:#d32f2f;">Error loading data</td></tr>';
                 }}
             }}
             
@@ -1520,30 +1581,120 @@ def get_software_management_page() -> str:
                 
                 const tbody = document.getElementById('softwareBody');
                 if (filtered.length === 0) {{
-                    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; color:#999;">No software found</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:#999;">No software found</td></tr>';
+                    updateBulkActionsUI();
                     return;
                 }}
                 
                 tbody.innerHTML = filtered.map(sw => `
                     <tr>
+                        <td class="checkbox-col">
+                            <input type="checkbox" 
+                                   data-name="${{sw.original_name}}" 
+                                   onchange="togglePackage('${{sw.original_name}}', this.checked)">
+                        </td>
                         <td><strong>${{sw.original_name}}</strong></td>
                         <td><code>${{sw.normalized_for_nvd}}</code></td>
                         <td><span class="status-badge status-${{sw.status}}">${{sw.status}}</span></td>
                         <td>${{sw.cached ? '<span style="color:#d32f2f; font-weight:600;">' + sw.cves_found + ' CVE(s)</span>' : '<span style="color:#999;">-</span>'}}</td>
                         <td>
                             <div class="action-btns">
-                                <button class="btn-small btn-edit" onclick="openEditModal('${{sw.original_name}}', '${{sw.normalized_for_nvd}}', '${{sw.status}}', '${{(sw.comment || '').replace(/'/g, "&apos;")}}')">✏️ Edit</button>
                                 <button class="btn-small btn-force" onclick="forceCheck('${{sw.original_name}}')">⚡ Force Check</button>
                             </div>
                         </td>
                     </tr>
                 `).join('');
+                
+                updateBulkActionsUI();
+            }}
+            
+            function togglePackage(name, checked) {{
+                if (checked) {{
+                    selectedPackages.add(name);
+                }} else {{
+                    selectedPackages.delete(name);
+                    document.getElementById('selectAll').checked = false;
+                }}
+                updateBulkActionsUI();
+            }}
+            
+            function toggleSelectAll(checked) {{
+                const filtered = currentFilter === 'all' 
+                    ? allSoftware 
+                    : allSoftware.filter(s => s.status === currentFilter);
+                
+                selectedPackages.clear();
+                
+                if (checked) {{
+                    filtered.forEach(sw => selectedPackages.add(sw.original_name));
+                    document.querySelectorAll('.checkbox-col input').forEach(cb => cb.checked = true);
+                }} else {{
+                    document.querySelectorAll('.checkbox-col input').forEach(cb => cb.checked = false);
+                }}
+                updateBulkActionsUI();
+            }}
+            
+            function updateBulkActionsUI() {{
+                const bulkPanel = document.getElementById('bulkActions');
+                const count = selectedPackages.size;
+                document.getElementById('selectedCount').textContent = count;
+                
+                if (count > 0) {{
+                    bulkPanel.classList.add('active');
+                }} else {{
+                    bulkPanel.classList.remove('active');
+                }}
+            }}
+            
+            function clearSelection() {{
+                selectedPackages.clear();
+                document.getElementById('selectAll').checked = false;
+                document.querySelectorAll('.checkbox-col input').forEach(cb => cb.checked = false);
+                updateBulkActionsUI();
+            }}
+            
+            async function applyBulkStatus(newStatus) {{
+                if (selectedPackages.size === 0) {{
+                    alert('⚠️ No applications selected');
+                    return;
+                }}
+                
+                const count = selectedPackages.size;
+                const statusName = newStatus === 'in_task' ? 'In Task' : (newStatus === 'ignore' ? 'Ignore' : 'New');
+                
+                if (!confirm(`Set ${{count}} application(s) to ${{statusName}}?`)) return;
+                
+                try {{
+                    let successCount = 0;
+                    const promises = Array.from(selectedPackages).map(pkgName =>
+                        fetch('/api/software-management/update', {{
+                            method: 'POST',
+                            headers: {{'Content-Type': 'application/json'}},
+                            body: JSON.stringify({{
+                                original_name: pkgName,
+                                status: newStatus,
+                                comment: ''
+                            }})
+                        }}).then(r => {{
+                            if (r.ok) successCount++;
+                            return r;
+                        }})
+                    );
+                    
+                    await Promise.all(promises);
+                    alert(`✓ Updated ${{successCount}}/${{count}} application(s)`);
+                    clearSelection();
+                    loadSoftware();
+                }} catch (err) {{
+                    alert('❌ Error: ' + err.message);
+                }}
             }}
             
             function filterByStatus(status) {{
                 currentFilter = status;
                 document.querySelectorAll('.filter-btn').forEach(btn => btn.classList.remove('active'));
                 event.target.classList.add('active');
+                clearSelection();
                 renderSoftware();
             }}
             
