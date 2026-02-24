@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Packages - Vulnerability Collector</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .navbar {
+            background: white;
+            padding: 15px 0;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 30px;
+            border-radius: 5px;
+        }
+
+        .nav-container {
+            max-width: 1400px;
+            margin: 0 auto;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0 20px;
+        }
+
+        .nav-logo {
+            font-size: 18px;
+            font-weight: bold;
+            color: #667eea;
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 20px;
+            list-style: none;
+        }
+
+        .nav-links a {
+            text-decoration: none;
+            color: #333;
+            font-weight: 500;
+        }
+
+        .nav-links a.active {
+            color: #667eea;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 3px;
+        }
+
+        .logout-btn {
+            background: #d32f2f;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            color: white;
+            margin-bottom: 30px;
+        }
+
+        .section {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+
+        .section h2 {
+            color: #333;
+            margin-bottom: 20px;
+            font-size: 20px;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 10px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            color: #555;
+            margin-bottom: 8px;
+            font-weight: 500;
+        }
+
+        select, button {
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+
+        select {
+            width: 200px;
+        }
+
+        button {
+            background: #667eea;
+            color: white;
+            border: none;
+            cursor: pointer;
+            font-weight: 600;
+        }
+
+        button:hover {
+            background: #764ba2;
+        }
+
+        .packages-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
+        }
+
+        .package-card {
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 15px;
+            background: #f9f9f9;
+        }
+
+        .package-header {
+            display: flex;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .package-header input {
+            margin-right: 10px;
+        }
+
+        .package-name {
+            font-weight: 600;
+            color: #333;
+        }
+
+        .package-version {
+            color: #666;
+            font-size: 12px;
+        }
+
+        .scan-btn {
+            width: 100%;
+            margin-top: 15px;
+        }
+
+        .status-div {
+            margin-top: 15px;
+            padding: 10px;
+            border-radius: 5px;
+            font-weight: 600;
+        }
+
+        .scan-results {
+            margin-top: 20px;
+            padding: 15px;
+            background: #f0f8ff;
+            border-radius: 5px;
+        }
+
+        .scan-results h3 {
+            color: #2e7d32;
+            margin-bottom: 10px;
+        }
+
+        .scan-results ul {
+            margin-left: 20px;
+        }
+
+        .scan-results li {
+            margin-bottom: 5px;
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-container">
+            <div class="nav-logo">🛡️ Vulnerability Collector</div>
+            <ul class="nav-links">
+                <li><a href="/dashboard">Dashboard</a></li>
+                <li><a href="/hosts">Hosts</a></li>
+                <li><a href="/packages" class="active">Packages</a></li>
+                <li><a href="/software-management">Software Management</a></li>
+            </ul>
+            <form method="POST" action="/logout" style="margin:0;">
+                <button class="logout-btn">Logout</button>
+            </form>
+        </div>
+    </nav>
+
+    <div class="container">
+        <h1>📦 Package Selection</h1>
+
+        <div class="section">
+            <h2>🔍 Select Host & Packages</h2>
+
+            <div class="form-group">
+                <label for="hostSelect">Select Host:</label>
+                <select id="hostSelect">
+                    <option value="">Choose a host...</option>
+                    {hosts_options}
+                </select>
+            </div>
+
+            <div id="packagesDiv" style="display:none;">
+                <h3>Available Packages:</h3>
+                <div class="packages-grid" id="packagesGrid">
+                    <!-- Packages will be loaded here -->
+                </div>
+
+                <button class="scan-btn" onclick="scanSelectedPackages()">🔍 Scan Selected Packages</button>
+                <div id="statusDiv"></div>
+                <div id="scanResults"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        async function loadPackages() {
+            const hostname = document.getElementById('hostSelect').value;
+            if (!hostname) {
+                document.getElementById('packagesDiv').style.display = 'none';
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/scan-host?hostname=${encodeURIComponent(hostname)}`);
+                const data = await response.json();
+
+                const grid = document.getElementById('packagesGrid');
+                grid.innerHTML = '';
+
+                data.software.forEach(pkg => {
+                    const card = document.createElement('div');
+                    card.className = 'package-card';
+                    card.innerHTML = `
+                        <div class="package-header">
+                            <input type="checkbox" class="pkg-checkbox" data-name="${pkg.name}" data-version="${pkg.version || ''}">
+                            <div>
+                                <div class="package-name">${pkg.name}</div>
+                                <div class="package-version">v${pkg.version || 'N/A'}</div>
+                            </div>
+                        </div>
+                    `;
+                    grid.appendChild(card);
+                });
+
+                document.getElementById('packagesDiv').style.display = 'block';
+            } catch (err) {
+                alert('Error loading packages: ' + err.message);
+            }
+        }
+
+        async function scanSelectedPackages() {
+            const hostname = document.getElementById('hostSelect').value;
+            if (!hostname) return alert('Select a host first');
+
+            const checked = Array.from(document.querySelectorAll('.pkg-checkbox')).filter(c => c.checked).map(c => ({
+                name: c.dataset.name,
+                version: c.dataset.version || null
+            }));
+
+            if (checked.length === 0) return alert('Select at least one package');
+
+            const statusDiv = document.getElementById('statusDiv');
+            statusDiv.innerHTML = '<div id="scanStatus" style="color:#667eea;">🔄 Starting scan...</div>';
+
+            try {
+                const resp = await fetch('/api/scan-packages', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ hostname, packages: checked })
+                });
+
+                if (!resp.ok) throw new Error('Scan failed');
+                const result = await resp.json();
+
+                let html = `<div class="scan-results">
+                    <h3>✓ Scan Complete</h3>
+                    <p>Checked: <strong>${result.checked}</strong> packages</p>
+                    <p>Vulnerable: <strong>${result.vulnerable_count}</strong> packages</p>`;
+
+                if (result.vulnerable_packages && result.vulnerable_packages.length) {
+                    html += '<h4>Vulnerable Packages:</h4><ul>';
+                    result.vulnerable_packages.forEach(v => {
+                        html += `<li><strong>${v.name}</strong> v${v.version || 'N/A'} — ${v.cves_found} CVE(s), CVSS max: ${v.cvss_max.toFixed(1)}</li>`;
+                    });
+                    html += '</ul>';
+                } else {
+                    html += '<p style="color:green;">No vulnerabilities found!</p>';
+                }
+
+                html += '</div>';
+                document.getElementById('scanResults').innerHTML = html;
+                statusDiv.innerHTML = '';
+            } catch (err) {
+                statusDiv.innerHTML = `<div id="scanStatus" style="color:#d32f2f;">❌ Error: ${err.message}</div>`;
+            }
+        }
+
+        document.getElementById('hostSelect').addEventListener('change', loadPackages);
+    </script>
+</body>
+</html>

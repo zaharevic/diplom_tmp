@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hosts - Vulnerability Collector</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .navbar {
+            background: white;
+            padding: 15px 0;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 30px;
+            border-radius: 5px;
+        }
+
+        .nav-container {
+            max-width: 1400px;
+            margin: 0 auto;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0 20px;
+        }
+
+        .nav-logo {
+            font-size: 18px;
+            font-weight: bold;
+            color: #667eea;
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 20px;
+            list-style: none;
+        }
+
+        .nav-links a {
+            text-decoration: none;
+            color: #333;
+            font-weight: 500;
+        }
+
+        .nav-links a.active {
+            color: #667eea;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 3px;
+        }
+
+        .logout-btn {
+            background: #d32f2f;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            color: white;
+            margin-bottom: 30px;
+        }
+
+        .section {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+
+        .section h2 {
+            color: #333;
+            margin-bottom: 20px;
+            font-size: 20px;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 10px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th {
+            background: #f5f5f5;
+            padding: 12px;
+            text-align: left;
+            font-weight: 600;
+            color: #333;
+            border-bottom: 2px solid #ddd;
+        }
+
+        td {
+            padding: 12px;
+            border-bottom: 1px solid #eee;
+        }
+
+        tr:hover {
+            background: #f9f9f9;
+        }
+
+        .ping-status {
+            padding: 4px 8px;
+            border-radius: 3px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .ping-status.online {
+            background: #c8e6c9;
+            color: #2e7d32;
+        }
+
+        .ping-status.offline {
+            background: #ffcdd2;
+            color: #c62828;
+        }
+
+        .ping-status.checking {
+            background: #fff9c4;
+            color: #f57f17;
+        }
+
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal.active {
+            display: flex;
+        }
+
+        .modal-content {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            max-width: 600px;
+            width: 90%;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+
+        .modal h2 {
+            margin-bottom: 20px;
+            color: #333;
+        }
+
+        .modal-buttons {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+        }
+
+        .btn-close {
+            background: #ddd;
+            color: #333;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: 600;
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-container">
+            <div class="nav-logo">🛡️ Vulnerability Collector</div>
+            <ul class="nav-links">
+                <li><a href="/dashboard">Dashboard</a></li>
+                <li><a href="/hosts" class="active">Hosts</a></li>
+                <li><a href="/packages">Packages</a></li>
+                <li><a href="/software-management">Software Management</a></li>
+            </ul>
+            <form method="POST" action="/logout" style="margin:0;">
+                <button class="logout-btn">Logout</button>
+            </form>
+        </div>
+    </nav>
+
+    <div class="container">
+        <h1>🖥️ Hosts Management</h1>
+
+        <div class="section">
+            <h2>📋 Host List</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Hostname</th>
+                        <th>IP Address</th>
+                        <th>OS</th>
+                        <th>Last Report</th>
+                        <th>Ping Status</th>
+                        <th>Software Count</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {hosts_rows}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="modal" id="softwareModal">
+        <div class="modal-content">
+            <h2 id="modalHostname">Software Details</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Package Name</th>
+                        <th>Version</th>
+                    </tr>
+                </thead>
+                <tbody id="softwareBody">
+                </tbody>
+            </table>
+            <div class="modal-buttons">
+                <button class="btn-close" onclick="closeSoftwareModal()">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        async function pingHost(hostname) {
+            const statusEl = document.getElementById(`ping-${hostname}`);
+            statusEl.textContent = '🔄 Checking...';
+            statusEl.className = 'ping-status checking';
+
+            try {
+                const response = await fetch(`/api/hosts/ping?hostname=${encodeURIComponent(hostname)}`);
+                const data = await response.json();
+
+                if (data.online) {
+                    statusEl.textContent = '✓ Online';
+                    statusEl.className = 'ping-status online';
+                } else {
+                    statusEl.textContent = '✗ Offline';
+                    statusEl.className = 'ping-status offline';
+                }
+            } catch (err) {
+                statusEl.textContent = '? Error';
+                statusEl.className = 'ping-status offline';
+            }
+        }
+
+        function pingAllHosts() {
+            const hostRows = document.querySelectorAll('tr[data-hostname]');
+            hostRows.forEach(row => {
+                const hostname = row.getAttribute('data-hostname');
+                pingHost(hostname);
+            });
+        }
+
+        function viewSoftware(hostname) {
+            fetch(`/api/scan-host?hostname=${encodeURIComponent(hostname)}`)
+                .then(r => r.json())
+                .then(data => {
+                    document.getElementById('modalHostname').textContent = `Software on ${hostname}`;
+                    const tbody = document.getElementById('softwareBody');
+                    tbody.innerHTML = '';
+                    data.software.forEach(pkg => {
+                        const row = `<tr><td>${pkg.name}</td><td>${pkg.version || 'N/A'}</td></tr>`;
+                        tbody.innerHTML += row;
+                    });
+                    document.getElementById('softwareModal').classList.add('active');
+                });
+        }
+
+        function closeSoftwareModal() {
+            document.getElementById('softwareModal').classList.remove('active');
+        }
+
+        // Ping hosts on load
+        pingAllHosts();
+
+        // Refresh ping every 5 minutes
+        setInterval(pingAllHosts, 5 * 60 * 1000);
+    </script>
+</body>
+</html>
