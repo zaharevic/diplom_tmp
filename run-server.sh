@@ -20,14 +20,20 @@ print_usage() {
     echo ""
     echo "Commands:"
     echo "  build          - Build Docker image"
-    echo "  run            - Run container (build if needed)"
+    echo "  run            - Run container (build if needed) (alias: start)"
+    echo "  start          - Alias for run"
     echo "  stop           - Stop running container"
+    echo "  restart        - Restart container (stop + run)"
+    echo "  status         - Show container status"
     echo "  logs           - Show container logs"
     echo "  shell          - Open interactive shell in running container"
-    echo "  db             - Query database (check reports and software)"
-    echo "  clean-cache    - Clear NVD API cache (keeps reports and software)"
-    echo "  clean-db       - Delete all data (reports, software, cache)"
-    echo "  cleanup        - Remove container and image"
+    echo "  db             - Query database (check reports and software). Optional SQL: $0 db \"<SQL>\""
+    echo "  clean-cache    - Clear NVD API cache (keeps reports and software) (alias: clear-cache)"
+    echo "  clear-cache    - Alias for clean-cache"
+    echo "  clean-db       - Delete all data (reports, software, cache) (alias: clear-db)"
+    echo "  clear-db       - Alias for clean-db"
+    echo "  cleanup        - Remove container and image (alias: clean)"
+    echo "  clean          - Alias for cleanup"
     echo ""
     echo "Environment variables:"
     echo "  DATA_DIR      - Local directory to mount for reports (default: .data)"
@@ -119,6 +125,15 @@ show_logs() {
     docker logs --tail 100 ${CONTAINER_NAME}
 }
 
+status_container() {
+    if docker ps --filter "name=${CONTAINER_NAME}" --format "{{.Names}}" | grep -q ${CONTAINER_NAME}; then
+        echo -e "${GREEN}[+] Container ${CONTAINER_NAME} is running${NC}"
+        docker ps --filter "name=${CONTAINER_NAME}" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+    else
+        echo -e "${YELLOW}[-] Container ${CONTAINER_NAME} is not running${NC}"
+    fi
+}
+
 open_shell() {
     if ! docker ps --filter "name=${CONTAINER_NAME}" --format "{{.Names}}" | grep -q ${CONTAINER_NAME}; then
         echo -e "${RED}[-] Container not running${NC}"
@@ -134,6 +149,12 @@ query_db() {
         exit 1
     fi
     echo -e "${YELLOW}[*] Querying database...${NC}"
+    # If an SQL argument is provided, run it; otherwise run summary queries
+    if [ -n "$2" ]; then
+        SQL="$2"
+        docker exec ${CONTAINER_NAME} sqlite3 /data/reports/vuln_collector.db "${SQL}"
+        return
+    fi
     docker exec ${CONTAINER_NAME} sqlite3 /data/reports/vuln_collector.db << 'EOF'
 .mode column
 .headers on
@@ -160,7 +181,11 @@ cleanup() {
 
 clean_cache() {
     echo -e "${YELLOW}[*] Clearing NVD API cache...${NC}"
-    ./run-server.sh db "DELETE FROM cve_cache;"
+    if ! docker ps --filter "name=${CONTAINER_NAME}" --format "{{.Names}}" | grep -q ${CONTAINER_NAME}; then
+        echo -e "${RED}[-] Container not running${NC}"
+        exit 1
+    fi
+    docker exec ${CONTAINER_NAME} sqlite3 /data/reports/vuln_collector.db "DELETE FROM cve_cache;"
     echo -e "${GREEN}[+] NVD API cache cleared${NC}"
     echo -e "${GREEN}[+] Reports and software data preserved${NC}"
 }
@@ -170,7 +195,11 @@ clean_db() {
     read -p "Are you sure? Type 'yes' to confirm: " confirm
     if [ "$confirm" = "yes" ]; then
         echo -e "${YELLOW}[*] Deleting all data...${NC}"
-        ./run-server.sh db "DELETE FROM cve_cache; DELETE FROM software; DELETE FROM reports;"
+        if ! docker ps --filter "name=${CONTAINER_NAME}" --format "{{.Names}}" | grep -q ${CONTAINER_NAME}; then
+            echo -e "${RED}[-] Container not running${NC}"
+            exit 1
+        fi
+        docker exec ${CONTAINER_NAME} sqlite3 /data/reports/vuln_collector.db "DELETE FROM cve_cache; DELETE FROM software; DELETE FROM reports;"
         echo -e "${GREEN}[+] All data deleted${NC}"
     else
         echo -e "${YELLOW}[!] Cancelled${NC}"
@@ -190,8 +219,18 @@ case "$1" in
     run)
         run_container
         ;;
+    start)
+        run_container
+        ;;
     stop)
         stop_container
+        ;;
+    restart)
+        stop_container
+        run_container
+        ;;
+    status)
+        status_container
         ;;
     logs)
         show_logs
@@ -205,10 +244,19 @@ case "$1" in
     clean-cache)
         clean_cache
         ;;
+    clear-cache)
+        clean_cache
+        ;;
     clean-db)
         clean_db
         ;;
+    clear-db)
+        clean_db
+        ;;
     cleanup)
+        cleanup
+        ;;
+    clean)
         cleanup
         ;;
     *)
