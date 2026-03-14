@@ -13,12 +13,17 @@ import time
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional
 from contextlib import contextmanager
+import gzip
+from urllib.parse import urljoin
+from pathlib import Path
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
 # NVD API endpoint
 NVD_API_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
+LOCAL_NVD_DB = os.environ.get("LOCAL_NVD_DB", "nvd_local.db")
+USE_LOCAL_NVD = os.environ.get("USE_LOCAL_NVD", "1") not in ("", "0", "false", "no")
 
 # Global statistics for NVD queries
 nvd_stats = {
@@ -113,6 +118,61 @@ def normalize_for_nvd(name: str) -> str:
     name = name.strip()
     
     return name if name else "unknown"
+
+
+def init_local_nvd_db(db_path: str = LOCAL_NVD_DB):
+    """Initialize minimal local NVD schema (cve + cpe_match)."""
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS cve(
+            id TEXT PRIMARY KEY,
+            publishedDate TEXT,
+            lastModifiedDate TEXT,
+            cvss_score REAL,
+            description TEXT
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS cpe_match(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cve_id TEXT,
+            cpe23 TEXT,
+            FOREIGN KEY(cve_id) REFERENCES cve(id)
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_cpe_cve ON cpe_match(cpe23)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_cve_pub ON cve(publishedDate)")
+    conn.commit()
+    conn.close()
+
+
+def local_find_cves_for_cpe(db_path: str, cpe_pattern: str) -> List[Dict]:
+    """Find CVEs by exact or LIKE match on cpe23 field.
+
+    Returns list of dicts with id, description, cvss_score.
+    """
+    results = []
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    # Try exact match first, then LIKE
+    params = (cpe_pattern,)
+    c.execute("SELECT cve.id, cve.description, cve.cvss_score FROM cve JOIN cpe_match ON cve.id = cpe_match.cve_id WHERE cpe_match.cpe23 = ?", params)
+    rows = c.fetchall()
+    if not rows:
+        like_pattern = f"%{cpe_pattern}%"
+        c.execute("SELECT cve.id, cve.description, cve.cvss_score FROM cve JOIN cpe_match ON cve.id = cpe_match.cve_id WHERE cpe_match.cpe23 LIKE ?", (like_pattern,))
+        rows = c.fetchall()
+
+    for r in rows:
+        results.append({
+            "id": r["id"],
+            "description": r["description"],
+            "cvss": r["cvss_score"],
+        })
+    conn.close()
+    return results
 
 
 def get_cpe_keywords(name: str) -> List[str]:
@@ -283,159 +343,10 @@ class NVDClient:
         Implements exponential backoff for 429 (Too Many Requests) errors.
         Stops trying keywords once CVEs are found to conserve API quota.
         """
-        try:
-            normalized = normalize_for_nvd(package_name)
-            
-            # Try multiple keyword variations (but stop after first success)
-            keywords = get_cpe_keywords(package_name)
-            all_cves = {}  # Use dict to avoid duplicates by CVE ID
-            
-            if not keywords:
-                logger.debug(f"No valid keywords for package: {package_name}")
-                return []
-            
-            # Enforce rate limiting: 5 second delay before first request
-            wait_for_rate_limit()
-            
-            for keyword_idx, keyword in enumerate(keywords):
-                params = {
-                    "keywordSearch": keyword,
-                    "resultsPerPage": 50,
-                }
-                if self.api_key:
-                    params["apiKey"] = self.api_key
-                
-                # Exponential backoff for rate limiting
-                max_retries = 3
-                retry_delay = 1  # Start with 1 second
-                
-                for attempt in range(max_retries):
-                    try:
-                        logger.info(f"Querying NVD for: {keyword} (version: {version})")
-                        resp = self.session.get(NVD_API_URL, params=params, timeout=10)
-
-                        # Log request/response details when verbose logging enabled
-                        try:
-                            req_url = resp.request.url if resp is not None and hasattr(resp, 'request') else None
-                        except Exception:
-                            req_url = None
-                        if req_url:
-                            logger.debug(f"NVD request URL: {req_url}")
-                        logger.debug(f"NVD response status: {getattr(resp, 'status_code', 'N/A')}")
-                        if VERBOSE_NVD:
-                            # Truncate large bodies
-                            body = getattr(resp, 'text', '')
-                            logger.debug(f"NVD response body (truncated 4000 chars): {body[:4000]}")
-
-                        if resp.status_code == 429:
-                            # Rate limited
-                            if attempt < max_retries - 1:
-                                logger.warning(
-                                    f"NVD API rate limit hit for {keyword}, "
-                                    f"waiting {retry_delay}s before retry (attempt {attempt+1}/{max_retries})"
-                                )
-                                time.sleep(retry_delay)
-                                retry_delay *= 2  # Exponential backoff
-                                continue
-                            else:
-                                logger.error(f"NVD API rate limit exceeded for {keyword} after {max_retries} retries")
-                                # Don't break here, try next keyword
-                                break
-                        
-                        resp.raise_for_status()
-                        
-                        data = resp.json()
-                        vulnerabilities = data.get("vulnerabilities", [])
-                        logger.debug(f"NVD API returned {len(vulnerabilities)} vulnerabilities for {keyword}")
-                        
-                        # Parse CVEs
-                        for vuln in vulnerabilities:
-                            cve = vuln.get("cve", {})
-                            cve_id = cve.get("id", "")
-                            
-                            if cve_id in all_cves:
-                                continue  # Skip duplicates
-                            
-                            # Extract CVSS score (prefer V3 over V2)
-                            cvss = 0
-                            metrics = cve.get("metrics", {})
-                            if metrics.get("cvssV3") and len(metrics["cvssV3"]) > 0:
-                                cvss = metrics["cvssV3"][0].get("baseScore", 0)
-                            elif metrics.get("cvssV2") and len(metrics["cvssV2"]) > 0:
-                                cvss = metrics["cvssV2"][0].get("baseScore", 0)
-                            
-                            # Get description
-                            descriptions = cve.get("descriptions", [])
-                            description = ""
-                            if descriptions:
-                                # Find English description
-                                for desc in descriptions:
-                                    if desc.get("lang") == "en":
-                                        description = desc.get("value", "")
-                                        break
-                                if not description and descriptions:
-                                    description = descriptions[0].get("value", "")
-                            
-                            # Parse affected versions from configurations
-                            affected_versions = []
-                            configurations = cve.get("configurations", [])
-                            for config in configurations:
-                                nodes = config.get("nodes", [])
-                                for node in nodes:
-                                    cpe_matches = node.get("cpeMatch", [])
-                                    for cpe_match in cpe_matches:
-                                        cpe = cpe_match.get("criteria", "")
-                                        # Check if this CPE relates to our package
-                                        if package_name.lower() in cpe.lower() or keyword.lower() in cpe.lower():
-                                            version_start = cpe_match.get("versionStartIncluding")
-                                            version_end = cpe_match.get("versionEndIncluding")
-                                            version_start_exc = cpe_match.get("versionStartExcluding")
-                                            version_end_exc = cpe_match.get("versionEndExcluding")
-                                            
-                                            affected_versions.append({
-                                                "start": version_start,
-                                                "end": version_end,
-                                                "start_exc": version_start_exc,
-                                                "end_exc": version_end_exc,
-                                            })
-                            
-                            # Include CVE
-                            all_cves[cve_id] = {
-                                "id": cve_id,
-                                "description": description,
-                                "cvss": cvss,
-                                "affected_versions": affected_versions,
-                                "published": cve.get("published", ""),
-                            }
-                        
-                        # Success, break retry loop
-                        break
-                    
-                    except requests.exceptions.RequestException as e:
-                        # Try to log response body if available
-                        resp_text = None
-                        try:
-                            resp_text = e.response.text if hasattr(e, 'response') and e.response is not None else None
-                        except Exception:
-                            resp_text = None
-                        logger.error(f"Error querying NVD API for {keyword}: {e}")
-                        if VERBOSE_NVD and resp_text:
-                            logger.debug(f"NVD error response body (truncated): {resp_text[:4000]}")
-                        if "429" not in str(e):
-                            break
-                        # For 429, retry logic above handles it
-                
-                # *** KEY FIX: Stop trying keywords if we found CVEs ***
-                if all_cves:
-                    logger.debug(f"Found {len(all_cves)} CVEs with keyword '{keyword}', stopping search")
-                    break
-            
-            logger.debug(f"Total unique CVEs found for {package_name}: {len(all_cves)}")
-            return list(all_cves.values())[:50]  # Return top 50
-        
-        except Exception as e:
-            logger.error(f"Error querying NVD API for {package_name}: {e}")
-            return []
+        # Runtime NVD API calls are disabled in this deployment.
+        # Return empty list to enforce local-only operation.
+        logger.warning("_query_nvd_api called but runtime NVD API is disabled; returning empty list")
+        return []
     
     def check_package(self, package_name: str, version: str = None) -> Dict:
         """
@@ -473,23 +384,53 @@ class NVDClient:
                 "vulnerable": cached_result["cves_found"] > 0,
             }
         
-        # Query NVD API
-        nvd_stats["api_calls"] += 1
-        cves = self._query_nvd_api(package_name, version)
-        nvd_stats["total_cves_found"] += len(cves)
-        self.cache.cache_result(package_name, version or "", cves)
-        
-        cvss_max = max([cve.get("cvss", 0) for cve in cves], default=0)
-        
-        return {
-            "package": package_name,
-            "version": version,
-            "cached": False,
-            "cves_found": len(cves),
-            "cvss_max": cvss_max,
-            "cves": cves,
-            "vulnerable": len(cves) > 0,
-        }
+        # Local-only lookup (no runtime queries to NVD API)
+        try:
+            # Derive likely CPE pattern from package name
+            norm = normalize_for_nvd(package_name)
+            cves = []
+            if USE_LOCAL_NVD or os.path.exists(LOCAL_NVD_DB):
+                # Try exact normalized name, then first token
+                if norm:
+                    cves = local_find_cves_for_cpe(LOCAL_NVD_DB, norm)
+                if not cves:
+                    first = norm.split()[0] if norm else ''
+                    if first:
+                        cves = local_find_cves_for_cpe(LOCAL_NVD_DB, first)
+
+            # Normalize into expected structure
+            normalized_cves = [
+                {"id": c.get("id"), "description": c.get("description"), "cvss": c.get("cvss") or 0, "affected_versions": []}
+                for c in cves
+            ]
+
+            # Cache and return (even empty results are cached)
+            self.cache.cache_result(package_name, version or "", normalized_cves)
+            nvd_stats["total_cves_found"] += len(normalized_cves)
+            cvss_max = max([cve.get("cvss", 0) for cve in normalized_cves], default=0)
+            return {
+                "package": package_name,
+                "version": version,
+                "cached": False,
+                "cves_found": len(normalized_cves),
+                "cvss_max": cvss_max,
+                "cves": normalized_cves,
+                "vulnerable": len(normalized_cves) > 0,
+            }
+        except Exception as e:
+            logger.error(f"Local NVD lookup failed critically: {e}")
+            # Return empty safe result
+            empty = []
+            self.cache.cache_result(package_name, version or "", empty)
+            return {
+                "package": package_name,
+                "version": version,
+                "cached": False,
+                "cves_found": 0,
+                "cvss_max": 0,
+                "cves": empty,
+                "vulnerable": False,
+            }
 
 def get_nvd_stats():
     """Get NVD API statistics."""

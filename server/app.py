@@ -20,7 +20,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Import NVD module
-from nvd import NVDClient, print_nvd_log_summary, normalize_for_nvd
+from nvd import NVDClient, print_nvd_log_summary, normalize_for_nvd, init_local_nvd_db
 from auth import create_session, is_session_valid, invalidate_session, verify_password
 from pages import (
     get_login_page, get_dashboard_page, get_hosts_page, 
@@ -93,6 +93,8 @@ NVD_API_KEY = os.environ.get("NVD_API_KEY")  # Optional NVD API key for higher r
 if API_KEY:
     logger.info(f"API_KEY configured; enforcing X-API-KEY header")
 
+# Initialize local NVD DB (creates nvd_local.db if missing)
+init_local_nvd_db()
 # Initialize NVD client
 nvd_client = NVDClient(DB_PATH, api_key=NVD_API_KEY)
 if NVD_API_KEY:
