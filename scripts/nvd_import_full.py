@@ -72,7 +72,18 @@ def import_feed_bytes(bts: bytes, db_path: str):
         cur.execute("INSERT OR REPLACE INTO cve(id, publishedDate, lastModifiedDate, cvss_score, description) VALUES(?,?,?,?,?)",
                     (cve_id, None, None, cvss, desc))
 
-        # Extract CPEs
+        # Extract CPEs (recursive through nodes/children) - handles nested structures
+        def extract_cpes_from_node(node):
+            # yield any cpe23Uri or criteria found in this node
+            for cm in node.get('cpeMatch', []) if isinstance(node.get('cpeMatch', []), list) else []:
+                cpe23 = cm.get('cpe23Uri') or cm.get('criteria')
+                if cpe23:
+                    yield cpe23
+            # recurse into children nodes
+            for child in node.get('children', []) if isinstance(node.get('children', []), list) else []:
+                for cpe in extract_cpes_from_node(child):
+                    yield cpe
+
         configurations = cve_obj.get('configurations') or cve_obj.get('configurations', {})
         nodes = []
         if isinstance(configurations, dict):
@@ -81,9 +92,10 @@ def import_feed_bytes(bts: bytes, db_path: str):
             nodes = configurations
 
         for node in nodes:
-            for cm in node.get('cpeMatch', []) if isinstance(node.get('cpeMatch', []), list) else []:
-                cpe23 = cm.get('cpe23Uri') or cm.get('criteria')
-                if cpe23:
+            for cpe23 in extract_cpes_from_node(node):
+                # avoid duplicate inserts by checking existence first
+                cur.execute("SELECT 1 FROM cpe_match WHERE cve_id = ? AND cpe23 = ? LIMIT 1", (cve_id, cpe23))
+                if not cur.fetchone():
                     cur.execute("INSERT INTO cpe_match(cve_id, cpe23) VALUES(?,?)", (cve_id, cpe23))
 
     conn.commit()
