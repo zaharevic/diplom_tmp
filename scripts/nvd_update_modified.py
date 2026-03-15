@@ -9,6 +9,11 @@ import gzip
 import json
 import sqlite3
 import requests
+import sys
+import os
+
+# Ensure project root is on sys.path so `from server import ...` works
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from server.nvd import init_local_nvd_db
 
 
