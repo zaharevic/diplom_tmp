@@ -165,6 +165,20 @@ def local_find_cves_for_cpe(db_path: str, cpe_pattern: str) -> List[Dict]:
         c.execute("SELECT cve.id, cve.description, cve.cvss_score FROM cve JOIN cpe_match ON cve.id = cpe_match.cve_id WHERE cpe_match.cpe23 LIKE ?", (like_pattern,))
         rows = c.fetchall()
 
+    # If still no rows, fall back to searching CVE descriptions (case-insensitive)
+    # This helps when modified feeds updated the CVE metadata but did not include configurations/CPEs.
+    if not rows:
+        try:
+            like_pattern = f"%{cpe_pattern}%"
+            # Use COLLATE NOCASE for case-insensitive match on ASCII text
+            c.execute("SELECT id, description, cvss_score FROM cve WHERE description LIKE ? COLLATE NOCASE", (like_pattern,))
+            rows = c.fetchall()
+            if rows and VERBOSE_NVD:
+                logger.info(f"local_find_cves_for_cpe: found {len(rows)} CVEs by description fallback for pattern '{cpe_pattern}'")
+        except Exception:
+            # ignore description fallback errors
+            rows = []
+
     for r in rows:
         results.append({
             "id": r["id"],
