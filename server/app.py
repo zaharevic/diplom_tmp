@@ -177,6 +177,31 @@ async def packages_page():
     return get_packages_page()
 
 
+@app.post("/api/hosts/criticality")
+async def set_host_criticality(request: Request):
+    """Set or update host criticality from a form POST."""
+    try:
+        form = await request.form()
+        hostname = form.get("hostname")
+        criticality = int(form.get("criticality", 1))
+        if not hostname:
+            raise ValueError("hostname required")
+
+        with get_db() as conn:
+            c = conn.cursor()
+            c.execute(
+                "INSERT INTO hosts (host, criticality, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)"
+                " ON CONFLICT(host) DO UPDATE SET criticality=excluded.criticality, updated_at=CURRENT_TIMESTAMP",
+                (hostname, criticality),
+            )
+            conn.commit()
+
+        return RedirectResponse(url="/hosts", status_code=302)
+    except Exception as e:
+        logger.error(f"Failed to set criticality: {e}")
+        return JSONResponse({"error": str(e)}, status_code=400)
+
+
 @app.get("/software-management", response_class=HTMLResponse)
 async def software_management_page():
     """Render software management page."""
@@ -273,6 +298,17 @@ def init_db():
         """)
         c.execute("CREATE INDEX IF NOT EXISTS idx_vuln_risk_base_risk ON vuln_risk(base_risk)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_vuln_risk_host_host ON vuln_risk_host(host)")
+
+        # Hosts metadata table for criticality and annotations
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS hosts (
+                host TEXT PRIMARY KEY,
+                criticality INTEGER DEFAULT 1,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        c.execute("CREATE INDEX IF NOT EXISTS idx_hosts_criticality ON hosts(criticality)")
 
         conn.commit()
 

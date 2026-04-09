@@ -100,12 +100,26 @@ def get_hosts_page() -> str:
     """Generate hosts management page with ping status."""
     with get_db() as conn:
         c = conn.cursor()
+        # Build unified set of hostnames from reports, software and hosts metadata
         c.execute("""
-            SELECT DISTINCT r.hostname, r.ip, r.os, r.received_at,
-                   (SELECT COUNT(*) FROM software WHERE hostname = r.hostname) as software_count
-            FROM reports r
-            WHERE r.id IN (SELECT MAX(id) FROM reports GROUP BY hostname)
-            ORDER BY r.hostname
+            SELECT h.hostname, r.ip, r.os, r.received_at,
+                   IFNULL(s.software_count, 0) AS software_count,
+                   IFNULL(hm.criticality, 1) AS criticality
+            FROM (
+                SELECT hostname FROM reports
+                UNION
+                SELECT hostname FROM software
+                UNION
+                SELECT host AS hostname FROM hosts
+            ) h
+            LEFT JOIN (
+                SELECT * FROM reports WHERE id IN (SELECT MAX(id) FROM reports GROUP BY hostname)
+            ) r ON r.hostname = h.hostname
+            LEFT JOIN (
+                SELECT hostname, COUNT(*) AS software_count FROM software GROUP BY hostname
+            ) s ON s.hostname = h.hostname
+            LEFT JOIN hosts hm ON hm.host = h.hostname
+            ORDER BY h.hostname
         """)
         hosts = [dict(row) for row in c.fetchall()]
 
@@ -113,23 +127,33 @@ def get_hosts_page() -> str:
         hosts_rows = ""
         for h in hosts:
             hostname = h['hostname']
-            # get top risk and count of risky CVEs
             c.execute("SELECT COUNT(*) FROM vuln_risk_host WHERE host = ? AND risk_score > 0", (hostname,))
             risky_count = c.fetchone()[0]
             c.execute("SELECT MAX(risk_score) FROM vuln_risk_host WHERE host = ?", (hostname,))
             top_risk_row = c.fetchone()
             top_risk = top_risk_row[0] if top_risk_row and top_risk_row[0] is not None else 0
 
+            # render criticality selector (1-5)
+            crit = int(h.get('criticality', 1)) if h.get('criticality') is not None else 1
+            crit_options = ''.join([f'<option value="{i}"{" selected" if i==crit else ""}>{i}</option>' for i in range(1,6)])
+
             hosts_rows += f'''<tr data-hostname="{h['hostname']}">
                 <td>{h['hostname']}</td>
-                <td>{h['ip']}</td>
-                <td>{h['os']}</td>
-                <td>{h['received_at']}</td>
+                <td>{h.get('ip') or ''}</td>
+                <td>{h.get('os') or ''}</td>
+                <td>{h.get('received_at') or ''}</td>
                 <td><span class="ping-status" id="ping-{h['hostname']}">...</span></td>
                 <td>{h['software_count']}</td>
                 <td>{risky_count}</td>
                 <td>{top_risk:.6f}</td>
-                <td><button onclick="viewSoftware('{h['hostname']}')" style="padding:6px 12px; background:#667eea; color:white; border:none; border-radius:5px; cursor:pointer;">View</button></td>
+                <td>
+                    <form method="POST" action="/api/hosts/criticality" style="display:inline;margin:0;">
+                        <input type="hidden" name="hostname" value="{h['hostname']}">
+                        <select name="criticality" style="padding:4px 6px;">{crit_options}</select>
+                        <button type="submit" style="padding:6px 10px; margin-left:6px; background:#2b6cb0; color:white; border:none; border-radius:4px;">Set</button>
+                    </form>
+                    <button onclick="viewSoftware('{h['hostname']}')" style="padding:6px 12px; background:#667eea; color:white; border:none; border-radius:5px; cursor:pointer; margin-left:8px;">View</button>
+                </td>
             </tr>'''
     
     with open('templates/hosts.html', 'r', encoding='utf-8') as f:
