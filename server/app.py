@@ -276,6 +276,13 @@ def init_db():
         """)
         c.execute("CREATE INDEX IF NOT EXISTS idx_scan_queue_hostname ON scan_queue(hostname)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_scan_queue_status ON scan_queue(status)")
+        # Add 'family' column to software for aggregated families (added via migration if missing)
+        try:
+            c.execute("ALTER TABLE software ADD COLUMN family TEXT DEFAULT ''")
+        except Exception:
+            # Column may already exist on subsequent runs
+            pass
+        c.execute("CREATE INDEX IF NOT EXISTS idx_software_family ON software(family)")
         
         # Ensure vuln_risk and vuln_risk_host tables exist (idempotent)
         c.execute("""
@@ -436,14 +443,15 @@ async def collect(request: Request):
 
             c.execute(
                 """
-                INSERT INTO software (report_id, hostname, name, version)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO software (report_id, hostname, name, version, family)
+                VALUES (?, ?, ?, ?, ?)
                 """,
                 (
                     report_id,
                     payload.get("hostname", "unknown"),
-                    recorded_name,
+                    orig,
                     recorded_ver,
+                    recorded_name,
                 ),
             )
         # Ensure host metadata row exists (upsert) so host appears in /hosts
@@ -693,7 +701,22 @@ async def scan_packages(request: Request):
         if not name:
             continue
         checked += 1
+        # Try original name first, then family, then normalized fallback
         result = nvd_client.check_package(name, version)
+        if not result.get("vulnerable"):
+            # lookup family from DB
+            with get_db() as conn:
+                c = conn.cursor()
+                c.execute("SELECT family FROM software WHERE hostname = ? AND name = ? LIMIT 1", (hostname, name))
+                row = c.fetchone()
+                family = row[0] if row and row[0] else None
+            if family:
+                result = nvd_client.check_package(family, version)
+        if not result.get("vulnerable"):
+            # final fallback: check normalized name
+            norm = normalize_for_nvd(name)
+            if norm and norm != name:
+                result = nvd_client.check_package(norm, version)
 
         if result["vulnerable"]:
             vulnerable.append({
