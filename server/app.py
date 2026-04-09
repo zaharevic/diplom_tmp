@@ -999,12 +999,72 @@ async def scan_packages(request: Request):
                 result = nvd_client.check_package(norm, version)
 
         if result["vulnerable"]:
+            # enrich CVE list with EPSS and KEV info from vuln_risk table
+            enriched_cves = []
+            ep_ss_max = 0.0
+            kev_present = False
+            with get_db() as conn:
+                c = conn.cursor()
+                # get host criticality (default 1)
+                c.execute("SELECT criticality FROM hosts WHERE host = ? LIMIT 1", (hostname,))
+                row = c.fetchone()
+                host_crit = row[0] if row and row[0] else 1
+
+                for cve in result.get("cves", [])[:100]:
+                    # cve may be dict or string depending on nvd_client implementation
+                    cve_id = cve if isinstance(cve, str) else cve.get("cve_id") or cve.get("id") or cve.get("CVE")
+                    if not cve_id:
+                        continue
+                    cve_id = cve_id.strip().upper()
+                    c.execute("SELECT ep_ss, in_kev, base_risk FROM vuln_risk WHERE cve_id = ?", (cve_id,))
+                    vr = c.fetchone()
+                    if vr:
+                        epss_val = vr[0] or 0.0
+                        in_kev = bool(vr[1])
+                        base = vr[2] or (epss_val * (2.0 if in_kev else 1.0))
+                    else:
+                        # fallback if vuln_risk missing
+                        epss_val = 0.0
+                        in_kev = False
+                        base = 0.0
+
+                    # compute host-specific risk score and upsert into vuln_risk_host
+                    risk_score = float(base) * float(host_crit)
+                    now = datetime.now().isoformat()
+                    try:
+                        c.execute(
+                            """
+                            INSERT INTO vuln_risk_host (host, cve_id, risk_score, computed_at)
+                            VALUES (?, ?, ?, ?)
+                            ON CONFLICT(host, cve_id) DO UPDATE SET
+                                risk_score = excluded.risk_score,
+                                computed_at = excluded.computed_at
+                            """,
+                            (hostname, cve_id, risk_score, now),
+                        )
+                    except Exception:
+                        # ensure table exists otherwise skip
+                        pass
+
+                    enriched_cves.append({"cve_id": cve_id, "ep_ss": epss_val, "in_kev": in_kev, "base_risk": base})
+                    if epss_val and epss_val > ep_ss_max:
+                        ep_ss_max = epss_val
+                    if in_kev:
+                        kev_present = True
+
+                try:
+                    conn.commit()
+                except Exception:
+                    pass
+
             vulnerable.append({
                 "name": name,
                 "version": version,
                 "cves_found": result["cves_found"],
                 "cvss_max": result["cvss_max"],
-                "cves": result["cves"][:10],
+                "cves": enriched_cves[:10],
+                "ep_ss_max": ep_ss_max,
+                "kev_present": kev_present,
             })
             logger.warning(
                 f"Vulnerability found on {hostname}: {name} v{version} ({result['cves_found']} CVEs, CVSS max={result['cvss_max']})"
