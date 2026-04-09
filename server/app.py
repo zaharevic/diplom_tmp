@@ -387,6 +387,22 @@ async def collect(request: Request):
                     app_info.get("version", ""),
                 ),
             )
+        # Ensure host metadata row exists (upsert) so host appears in /hosts
+        hostname_val = payload.get("hostname", "unknown")
+        try:
+            c.execute(
+                """
+                INSERT INTO hosts (host, created_at, updated_at)
+                VALUES (?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ON CONFLICT(host) DO UPDATE SET updated_at = CURRENT_TIMESTAMP
+                """,
+                (hostname_val,)
+            )
+        except Exception:
+            # Fallback for older SQLite versions without UPSERT syntax
+            c.execute("SELECT host FROM hosts WHERE host = ?", (hostname_val,))
+            if not c.fetchone():
+                c.execute("INSERT INTO hosts (host, created_at, updated_at) VALUES (?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)", (hostname_val,))
         conn.commit()
 
     logger.info(f"Report received from {host}: id={report_id}, software_count={len(software_list)}, saved to {path}")
