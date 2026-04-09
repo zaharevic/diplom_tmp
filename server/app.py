@@ -10,6 +10,9 @@ import sys
 from datetime import datetime, timezone
 from contextlib import contextmanager
 import socket
+import threading
+import subprocess
+import calendar
 
 # Configure logging
 logging.basicConfig(
@@ -104,6 +107,71 @@ else:
 
 
 # ==================== AUTHENTICATION ROUTES ====================
+
+
+@app.on_event("startup")
+def ensure_nvd_populated():
+    """On startup, if the local NVD DB exists but has no CVE rows,
+    run a background import of all NVD yearly feeds + modified feed.
+
+    This runs in a background thread so the FastAPI server can start
+    immediately and the import proceeds asynchronously.
+    """
+    try:
+        # Determine path to local NVD DB used by init_local_nvd_db (default)
+        local_db = os.environ.get("LOCAL_NVD_DB", "nvd_local.db")
+        # If init_local_nvd_db created file at /app/nvd_local.db or project root, try common locations
+        possible_paths = [local_db, os.path.join(os.getcwd(), local_db), os.path.join(os.path.dirname(__file__), '..', local_db)]
+        found = None
+        for p in possible_paths:
+            if os.path.exists(p):
+                found = os.path.abspath(p)
+                break
+        if not found:
+            logger.info(f"Local NVD DB not found at expected paths; skipping automatic import: {possible_paths}")
+            return
+
+        conn = sqlite3.connect(found)
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT COUNT(*) FROM cve")
+            cnt = cur.fetchone()[0]
+        except Exception:
+            cnt = 0
+        conn.close()
+
+        if cnt > 0:
+            logger.info(f"Local NVD DB at {found} already populated ({cnt} CVE rows)")
+            return
+
+        # Start background thread to import all NVD years + modified feed
+        def importer_thread(db_path):
+            try:
+                base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                start_year = 2002
+                end_year = datetime.now().year
+                logger.info(f"Starting background NVD import into {db_path} (years {start_year}-{end_year})")
+                for year in range(start_year, end_year + 1):
+                    url = f"https://nvd.nist.gov/feeds/json/cve/2.0/nvdcve-2.0-{year}.json.gz"
+                    logger.info(f"Importing NVD year {year} from {url}")
+                    subprocess.run([sys.executable, os.path.join(base, 'scripts', 'nvd_import_full.py'), '--feed-url', url, '--db', db_path], check=False)
+
+                # Finally import modified feed
+                modurl = "https://nvd.nist.gov/feeds/json/cve/2.0/nvdcve-2.0-modified.json.gz"
+                logger.info(f"Importing modified feed from {modurl}")
+                subprocess.run([sys.executable, os.path.join(base, 'scripts', 'nvd_update_modified.py'), '--url', modurl, '--db', db_path], check=False)
+
+                logger.info(f"Background NVD import finished (target DB: {db_path})")
+            except Exception as e:
+                logger.error(f"Background NVD import failed: {e}")
+
+        t = threading.Thread(target=importer_thread, args=(found,), daemon=True)
+        t.start()
+        logger.info("Triggered background NVD import thread; import will run asynchronously.")
+
+    except Exception as e:
+        logger.error(f"Error while checking/starting NVD import: {e}")
+
 
 @app.get("/login", response_class=HTMLResponse)
 async def login_page():
