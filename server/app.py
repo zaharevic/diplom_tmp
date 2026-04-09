@@ -324,6 +324,29 @@ def get_db():
         conn.close()
 
 
+def normalize_package_name(name: str) -> str:
+    """Normalize package names to reduce noise and allow grouping.
+
+    Rules:
+    - lowercase
+    - strip architecture suffix after ':' (eg. ':amd64')
+    - collapse known introspection prefixes (gir1.2-*) into family name 'gir1.2'
+    - trim whitespace
+    """
+    if not name:
+        return ""
+    n = name.lower().strip()
+    # remove arch suffix like ':amd64'
+    if ':' in n:
+        n = n.split(':', 1)[0]
+    # group GObject-introspection bindings into family to reduce noise
+    GROUP_PREFIXES = ["gir1.2-", "gir1-", "gir-"]
+    for p in GROUP_PREFIXES:
+        if n.startswith(p):
+            return p.rstrip('-')
+    return n
+
+
 # Initialize database on startup
 init_db()
 
@@ -372,9 +395,24 @@ async def collect(request: Request):
         )
         report_id = c.lastrowid
 
-        # Insert software packages
+        # Insert software packages (normalize + deduplicate to reduce noise)
         software_list = payload.get("software", [])
+        max_pkgs = int(os.environ.get("MAX_PACKAGES_PER_REPORT", "500"))
+        unique = {}
         for app_info in software_list:
+            orig = (app_info.get("name") or "").strip()
+            ver = app_info.get("version") or ""
+            norm = normalize_package_name(orig)
+            if not norm:
+                continue
+            # keep first-seen original name/version for this normalized key
+            if norm not in unique:
+                unique[norm] = (orig, ver)
+
+        stored = 0
+        for norm, (orig, ver) in unique.items():
+            if stored >= max_pkgs:
+                break
             c.execute(
                 """
                 INSERT INTO software (report_id, hostname, name, version)
@@ -383,10 +421,11 @@ async def collect(request: Request):
                 (
                     report_id,
                     payload.get("hostname", "unknown"),
-                    app_info.get("name", ""),
-                    app_info.get("version", ""),
+                    orig,
+                    ver,
                 ),
             )
+            stored += 1
         # Ensure host metadata row exists (upsert) so host appears in /hosts
         hostname_val = payload.get("hostname", "unknown")
         try:
