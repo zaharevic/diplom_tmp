@@ -339,6 +339,11 @@ def normalize_package_name(name: str) -> str:
     # remove arch suffix like ':amd64'
     if ':' in n:
         n = n.split(':', 1)[0]
+    # skip common noisy suffix packages (docs, locales, debug symbols, dev packages)
+    NOISE_SUFFIXES = ['-doc', '-dbg', '-locale', '-locales', '-man', '-symbols', '-common', '-data', '-dev']
+    for s in NOISE_SUFFIXES:
+        if n.endswith(s):
+            return ""
     # group GObject-introspection bindings into family to reduce noise
     GROUP_PREFIXES = ["gir1.2-", "gir1-", "gir-"]
     for p in GROUP_PREFIXES:
@@ -397,7 +402,6 @@ async def collect(request: Request):
 
         # Insert software packages (normalize + deduplicate to reduce noise)
         software_list = payload.get("software", [])
-        max_pkgs = int(os.environ.get("MAX_PACKAGES_PER_REPORT", "500"))
         unique = {}
         for app_info in software_list:
             orig = (app_info.get("name") or "").strip()
@@ -409,10 +413,27 @@ async def collect(request: Request):
             if norm not in unique:
                 unique[norm] = (orig, ver)
 
-        stored = 0
+        # Aggressive family collapsing: map some families to generic names
+        FAMILY_KEYS = {"lib": "lib", "python3": "python3", "python": "python", "gir1.2": "gir1.2"}
+
         for norm, (orig, ver) in unique.items():
-            if stored >= max_pkgs:
-                break
+            # if normalized key maps to a family, store the family name as the recorded package
+            if norm.startswith("lib"):
+                recorded_name = "lib"
+                recorded_ver = ""
+            elif norm.startswith("python3-") or norm == "python3":
+                recorded_name = "python3"
+                recorded_ver = ""
+            elif norm.startswith("python-") or norm == "python":
+                recorded_name = "python"
+                recorded_ver = ""
+            elif norm in FAMILY_KEYS:
+                recorded_name = FAMILY_KEYS[norm]
+                recorded_ver = ""
+            else:
+                recorded_name = orig
+                recorded_ver = ver
+
             c.execute(
                 """
                 INSERT INTO software (report_id, hostname, name, version)
@@ -421,11 +442,10 @@ async def collect(request: Request):
                 (
                     report_id,
                     payload.get("hostname", "unknown"),
-                    orig,
-                    ver,
+                    recorded_name,
+                    recorded_ver,
                 ),
             )
-            stored += 1
         # Ensure host metadata row exists (upsert) so host appears in /hosts
         hostname_val = payload.get("hostname", "unknown")
         try:
