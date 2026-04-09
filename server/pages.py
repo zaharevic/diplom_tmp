@@ -108,29 +108,29 @@ def get_hosts_page() -> str:
             ORDER BY r.hostname
         """)
         hosts = [dict(row) for row in c.fetchall()]
-    
-    # For each host, fetch top risk score (if any)
-    hosts_rows = ""
-    for h in hosts:
-        hostname = h['hostname']
-        # get top risk and count of risky CVEs
-        c.execute("SELECT COUNT(*) FROM vuln_risk_host WHERE host = ? AND risk_score > 0", (hostname,))
-        risky_count = c.fetchone()[0]
-        c.execute("SELECT MAX(risk_score) FROM vuln_risk_host WHERE host = ?", (hostname,))
-        top_risk_row = c.fetchone()
-        top_risk = top_risk_row[0] if top_risk_row and top_risk_row[0] is not None else 0
 
-        hosts_rows += f'''<tr data-hostname="{h['hostname']}">
-            <td>{h['hostname']}</td>
-            <td>{h['ip']}</td>
-            <td>{h['os']}</td>
-            <td>{h['received_at']}</td>
-            <td><span class="ping-status" id="ping-{h['hostname']}">...</span></td>
-            <td>{h['software_count']}</td>
-            <td>{risky_count}</td>
-            <td>{top_risk:.6f}</td>
-            <td><button onclick="viewSoftware('{h['hostname']}')" style="padding:6px 12px; background:#667eea; color:white; border:none; border-radius:5px; cursor:pointer;">View</button></td>
-        </tr>'''
+        # For each host, fetch top risk score (if any)
+        hosts_rows = ""
+        for h in hosts:
+            hostname = h['hostname']
+            # get top risk and count of risky CVEs
+            c.execute("SELECT COUNT(*) FROM vuln_risk_host WHERE host = ? AND risk_score > 0", (hostname,))
+            risky_count = c.fetchone()[0]
+            c.execute("SELECT MAX(risk_score) FROM vuln_risk_host WHERE host = ?", (hostname,))
+            top_risk_row = c.fetchone()
+            top_risk = top_risk_row[0] if top_risk_row and top_risk_row[0] is not None else 0
+
+            hosts_rows += f'''<tr data-hostname="{h['hostname']}">
+                <td>{h['hostname']}</td>
+                <td>{h['ip']}</td>
+                <td>{h['os']}</td>
+                <td>{h['received_at']}</td>
+                <td><span class="ping-status" id="ping-{h['hostname']}">...</span></td>
+                <td>{h['software_count']}</td>
+                <td>{risky_count}</td>
+                <td>{top_risk:.6f}</td>
+                <td><button onclick="viewSoftware('{h['hostname']}')" style="padding:6px 12px; background:#667eea; color:white; border:none; border-radius:5px; cursor:pointer;">View</button></td>
+            </tr>'''
     
     with open('templates/hosts.html', 'r', encoding='utf-8') as f:
         html = f.read()
