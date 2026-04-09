@@ -476,6 +476,45 @@ async def get_reports(hostname: str = None, limit: int = 100):
     return JSONResponse({"reports": reports})
 
 
+@app.get("/api/debug/hosts")
+async def debug_list_hosts():
+    """Debug: list hosts table contents."""
+    with get_db() as conn:
+        c = conn.cursor()
+        try:
+            c.execute("SELECT host, criticality, created_at, updated_at FROM hosts ORDER BY host")
+            rows = [dict(r) for r in c.fetchall()]
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+    return JSONResponse({"hosts": rows})
+
+
+@app.post("/api/debug/upsert-host")
+async def debug_upsert_host(request: Request):
+    """Debug: upsert a host by JSON payload {"host": "name"}."""
+    try:
+        data = await request.json()
+        host = data.get("host")
+        if not host:
+            return JSONResponse({"error": "host required"}, status_code=400)
+        with get_db() as conn:
+            c = conn.cursor()
+            try:
+                c.execute("INSERT INTO hosts (host, created_at, updated_at) VALUES (?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) ON CONFLICT(host) DO UPDATE SET updated_at = CURRENT_TIMESTAMP", (host,))
+            except Exception:
+                c.execute("SELECT host FROM hosts WHERE host = ?", (host,))
+                if not c.fetchone():
+                    c.execute("INSERT INTO hosts (host, created_at, updated_at) VALUES (?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)", (host,))
+            conn.commit()
+            c.execute("SELECT COUNT(*) FROM hosts")
+            cnt = c.fetchone()[0]
+        logger.info(f"Debug upsert host='{host}', hosts_count={cnt}")
+        return JSONResponse({"status": "ok", "hosts_count": cnt})
+    except Exception as e:
+        logger.error(f"Debug upsert failed: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.get("/api/software")
 async def get_software(hostname: str = None, name: str = None, limit: int = 1000):
     """Get software packages, optionally filtered by hostname or name."""
