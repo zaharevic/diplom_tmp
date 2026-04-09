@@ -404,13 +404,16 @@
                         <th class="checkbox-col"><input type="checkbox" id="selectAll" onchange="toggleSelectAll(this.checked)"></th>
                         <th>Application Name</th>
                         <th>NVD Query Name</th>
+                        <th>EPSS</th>
+                        <th>KEV</th>
+                        <th>Last Checked</th>
                         <th>Status</th>
                         <th>CVEs Found</th>
                         <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody id="softwareBody">
-                    <tr><td colspan="6" style="text-align:center; color:#999;">Loading...</td></tr>
+                    <tr><td colspan="9" style="text-align:center; color:#999;">Loading...</td></tr>
                 </tbody>
             </table>
         </div>
@@ -475,11 +478,11 @@
             
             const tbody = document.getElementById('softwareBody');
             if (filtered.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:#999;">No software found</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="9" style="text-align:center; color:#999;">No software found</td></tr>';
                 updateBulkActionsUI();
                 return;
             }
-            
+
             tbody.innerHTML = filtered.map(sw => `
                 <tr>
                     <td class="checkbox-col">
@@ -489,6 +492,9 @@
                     </td>
                     <td><strong>${sw.original_name}</strong></td>
                     <td><code>${sw.normalized_for_nvd}</code></td>
+                    <td>${(sw.ep_ss && Number(sw.ep_ss) > 0) ? '<strong style="color:#c62828">' + Number(sw.ep_ss).toFixed(6) + '</strong>' : '<span style="color:#999;">-</span>'}</td>
+                    <td>${sw.in_kev ? '<strong style="color:#c62828">YES</strong>' : 'NO'}</td>
+                    <td>${sw.last_checked ? sw.last_checked : '-'}</td>
                     <td><span class="status-badge status-${sw.status}">${sw.status}</span></td>
                     <td>${sw.cached ? '<span style="color:#d32f2f; font-weight:600;">' + sw.cves_found + ' CVE(s)</span>' : '<span style="color:#999;">-</span>'}</td>
                     <td>
