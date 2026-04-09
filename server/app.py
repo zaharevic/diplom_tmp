@@ -531,6 +531,19 @@ def init_db():
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        # Add EPSS / KEV columns if missing (migration-friendly)
+        try:
+            c.execute("ALTER TABLE software_management ADD COLUMN ep_ss REAL DEFAULT 0")
+        except Exception:
+            pass
+        try:
+            c.execute("ALTER TABLE software_management ADD COLUMN in_kev INTEGER DEFAULT 0")
+        except Exception:
+            pass
+        try:
+            c.execute("ALTER TABLE software_management ADD COLUMN last_checked TEXT")
+        except Exception:
+            pass
         c.execute("CREATE INDEX IF NOT EXISTS idx_software_management_status ON software_management(status)")
         
         # Fix any existing records with incorrect status (migration)
@@ -1069,6 +1082,26 @@ async def scan_packages(request: Request):
             logger.warning(
                 f"Vulnerability found on {hostname}: {name} v{version} ({result['cves_found']} CVEs, CVSS max={result['cvss_max']})"
             )
+            # Upsert EPSS/KEV summary into software_management for this package
+            try:
+                with get_db() as conn2:
+                    c2 = conn2.cursor()
+                    norm = normalize_for_nvd(name) or name
+                    c2.execute(
+                        """
+                        INSERT INTO software_management (original_name, normalized_for_nvd, status, comment, ep_ss, in_kev, last_checked)
+                        VALUES (?, ?, 'new', '', ?, ?, CURRENT_TIMESTAMP)
+                        ON CONFLICT(original_name) DO UPDATE SET
+                            ep_ss = excluded.ep_ss,
+                            in_kev = excluded.in_kev,
+                            last_checked = excluded.last_checked,
+                            updated_at = CURRENT_TIMESTAMP
+                        """,
+                        (name, norm, ep_ss_max, 1 if kev_present else 0),
+                    )
+                    conn2.commit()
+            except Exception as e:
+                logger.debug(f"Failed to upsert EPSS/KEV into software_management for {name}: {e}")
 
     logger.info(f"Selected scan complete for {hostname}: checked={checked}, vulnerable={len(vulnerable)}")
 
@@ -1298,10 +1331,29 @@ async def get_software_management():
                 normalized = mgmt_row[0]
                 status = mgmt_row[1]
                 comment = mgmt_row[2]
+                # Try to read EPSS/KEV fields if present
+                try:
+                    c.execute("SELECT ep_ss, in_kev, last_checked FROM software_management WHERE original_name = ?", (pkg_name,))
+                    extra = c.fetchone()
+                    if extra:
+                        ep_ss_val = extra[0]
+                        in_kev_val = bool(extra[1])
+                        last_checked = extra[2]
+                    else:
+                        ep_ss_val = 0.0
+                        in_kev_val = False
+                        last_checked = None
+                except Exception:
+                    ep_ss_val = 0.0
+                    in_kev_val = False
+                    last_checked = None
             else:
                 normalized = normalize_for_nvd(pkg_name)
                 status = "new"
                 comment = None
+                ep_ss_val = 0.0
+                in_kev_val = False
+                last_checked = None
             
             cves_found = cached.get("cves_found", 0) if cached else 0
             
@@ -1312,6 +1364,9 @@ async def get_software_management():
                 "comment": comment,
                 "cves_found": cves_found,
                 "cached": cached is not None,
+                "ep_ss": ep_ss_val,
+                "in_kev": in_kev_val,
+                "last_checked": last_checked,
             })
     
     logger.debug(f"Retrieved {len(result)} software packages for management")
