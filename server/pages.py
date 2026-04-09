@@ -159,7 +159,7 @@ def get_hosts_page() -> str:
     with open('templates/hosts.html', 'r', encoding='utf-8') as f:
         html = f.read()
     
-    return html.replace('{hosts_table}', hosts_rows)
+    return html.replace('{hosts_rows}', hosts_rows)
 
 
 def get_packages_page() -> str:
