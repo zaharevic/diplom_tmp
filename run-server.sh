@@ -64,6 +64,26 @@ run_container() {
     # Create data directory
     mkdir -p ${DATA_DIR}
 
+    # If local NVD DB is missing on host, run host-side batch importer to populate it.
+    NVD_DB_HOST_PATH="${PWD}/${DATA_DIR}/nvd_local.db"
+    if [ ! -f "${NVD_DB_HOST_PATH}" ]; then
+        echo -e "${YELLOW}[*] Local NVD DB not found at ${NVD_DB_HOST_PATH}. Attempting host-side import.${NC}"
+        # prefer bash script in repository
+        if [ -f "./scripts/import_all_nvd_years.sh" ]; then
+            echo -e "${YELLOW}[*] Running scripts/import_all_nvd_years.sh to populate NVD DB (this may take a long time)...${NC}"
+            bash ./scripts/import_all_nvd_years.sh 2002 $(date +%Y) "${NVD_DB_HOST_PATH}" || echo -e "${RED}[!] Import script exited with error${NC}"
+            if [ -f "${NVD_DB_HOST_PATH}" ]; then
+                echo -e "${GREEN}[+] NVD DB created at ${NVD_DB_HOST_PATH}${NC}"
+            else
+                echo -e "${YELLOW}[!] NVD DB still missing after import attempt. Container will start without it.${NC}"
+            fi
+        else
+            echo -e "${YELLOW}[!] scripts/import_all_nvd_years.sh not found in project root; skipping host import.${NC}"
+        fi
+    else
+        echo -e "${GREEN}[+] Found existing NVD DB at ${NVD_DB_HOST_PATH}; skipping host import.${NC}"
+    fi
+
     echo -e "${YELLOW}[*] Starting container: ${CONTAINER_NAME}${NC}"
     
     # Build docker run command with env file support
@@ -76,6 +96,7 @@ run_container() {
             -v ${PWD}/${DATA_DIR}:/data/reports \
             -v ${PWD}/${SERVER_DIR}:/app \
             --env-file .env \
+            -e LOCAL_NVD_DB="/data/reports/nvd_local.db" \
             -e DB_PATH="/data/reports/vuln_collector.db" \
             -e DATA_DIR="/data/reports" \
             ${IMAGE_NAME}
@@ -89,6 +110,7 @@ run_container() {
             -v ${PWD}/${SERVER_DIR}:/app \
             -e API_KEY="${API_KEY}" \
             -e NVD_API_KEY="${NVD_API_KEY}" \
+            -e LOCAL_NVD_DB="/data/reports/nvd_local.db" \
             -e DB_PATH="/data/reports/vuln_collector.db" \
             -e DATA_DIR="/data/reports" \
             ${IMAGE_NAME}
