@@ -252,6 +252,28 @@ def init_db():
         c.execute("CREATE INDEX IF NOT EXISTS idx_scan_queue_hostname ON scan_queue(hostname)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_scan_queue_status ON scan_queue(status)")
         
+        # Ensure vuln_risk and vuln_risk_host tables exist (idempotent)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS vuln_risk (
+                cve_id TEXT PRIMARY KEY,
+                ep_ss REAL DEFAULT 0,
+                in_kev INTEGER DEFAULT 0,
+                base_risk REAL DEFAULT 0,
+                computed_at TEXT
+            )
+        """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS vuln_risk_host (
+                host TEXT,
+                cve_id TEXT,
+                risk_score REAL DEFAULT 0,
+                computed_at TEXT,
+                PRIMARY KEY (host, cve_id)
+            )
+        """)
+        c.execute("CREATE INDEX IF NOT EXISTS idx_vuln_risk_base_risk ON vuln_risk(base_risk)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_vuln_risk_host_host ON vuln_risk_host(host)")
+
         conn.commit()
 
 
