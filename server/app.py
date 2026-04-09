@@ -581,6 +581,94 @@ async def get_packages():
     return JSONResponse(result)
 
 
+@app.get("/api/vulns/risk")
+async def get_vuln_risk(host: str = None, limit: int = 100):
+    """Return risk-ranked CVEs for a host (or global list if host is omitted)."""
+    with get_db() as conn:
+        c = conn.cursor()
+        if host:
+            c.execute(
+                """
+                SELECT h.cve_id, vr.ep_ss, vr.in_kev, h.risk_score, cve.cvss_score, substr(cve.description,1,500) as description
+                FROM vuln_risk_host h
+                LEFT JOIN vuln_risk vr ON h.cve_id = vr.cve_id
+                LEFT JOIN cve ON cve.id = h.cve_id
+                WHERE h.host = ?
+                ORDER BY h.risk_score DESC
+                LIMIT ?
+                """,
+                (host, limit),
+            )
+            rows = c.fetchall()
+            data = [
+                {
+                    "cve_id": r[0],
+                    "ep_ss": r[1],
+                    "in_kev": bool(r[2]),
+                    "risk_score": r[3],
+                    "cvss_score": r[4],
+                    "description": r[5],
+                }
+                for r in rows
+            ]
+        else:
+            # global list by base_risk
+            c.execute(
+                "SELECT cve_id, ep_ss, in_kev, base_risk, computed_at FROM vuln_risk ORDER BY base_risk DESC LIMIT ?",
+                (limit,),
+            )
+            rows = c.fetchall()
+            data = [
+                {
+                    "cve_id": r[0],
+                    "ep_ss": r[1],
+                    "in_kev": bool(r[2]),
+                    "base_risk": r[3],
+                    "computed_at": r[4],
+                }
+                for r in rows
+            ]
+
+    return JSONResponse({"host": host, "results": data})
+
+
+@app.get("/host-risk", response_class=HTMLResponse)
+async def host_risk_page(host: str = None, limit: int = 50):
+    """Simple HTML page showing top risky CVEs for a host."""
+    if not host:
+        return HTMLResponse("<html><body><h3>Please provide ?host=...</h3></body></html>")
+
+    with get_db() as conn:
+        c = conn.cursor()
+        c.execute(
+            """
+            SELECT h.cve_id, vr.ep_ss, vr.in_kev, h.risk_score, cve.cvss_score, substr(cve.description,1,400) as description
+            FROM vuln_risk_host h
+            LEFT JOIN vuln_risk vr ON h.cve_id = vr.cve_id
+            LEFT JOIN cve ON cve.id = h.cve_id
+            WHERE h.host = ?
+            ORDER BY h.risk_score DESC
+            LIMIT ?
+            """,
+            (host, limit),
+        )
+        rows = c.fetchall()
+
+    html = [
+        f"<html><head><title>Risk for {host}</title></head><body>",
+        f"<h2>Top {len(rows)} risky CVEs for {host}</h2>",
+        "<table border='1' style='border-collapse:collapse'><tr><th>CVE</th><th>Risk</th><th>EPSS</th><th>KEV</th><th>CVSS</th><th>Description</th></tr>",
+    ]
+    for r in rows:
+        cve_id, ep_ss, in_kev, risk, cvss, desc = r
+        html.append(
+            f"<tr><td>{cve_id}</td><td>{risk:.6f}</td><td>{(ep_ss or 0):.6f}</td><td>{'YES' if in_kev else 'NO'}</td><td>{cvss}</td><td>{desc}</td></tr>"
+        )
+
+    html.append("</table></body></html>")
+    return HTMLResponse('\n'.join(html))
+
+
 @app.post("/api/packages/rescan")
 async def rescan_package(request: Request):
     """
