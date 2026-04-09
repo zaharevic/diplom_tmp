@@ -167,55 +167,43 @@ def ensure_nvd_populated():
                             continue
                     return None
 
-                for year in range(start_year, end_year + 1):
-                    url = f"https://nvd.nist.gov/feeds/json/cve/2.0/nvdcve-2.0-{year}.json.gz"
-                    logger.info(f"Importing NVD year {year} from {url}")
-                    script_path = find_script('nvd_import_full.py')
+                # Prefer running the provided batch import script if present (simpler and tested)
+                batch_script = find_script('import_all_nvd_years.sh') or find_script('Import-All-NVD-Years.ps1')
+                if batch_script:
+                    try:
+                        if batch_script.endswith('.sh'):
+                            logger.info(f"Running batch import script: {batch_script}")
+                            subprocess.run(['bash', batch_script, str(start_year), str(end_year), db_path], check=False)
+                        else:
+                            # PowerShell script - invoke with powershell if available
+                            logger.info(f"Running PowerShell batch import script: {batch_script}")
+                            subprocess.run(['pwsh', '-File', batch_script, str(start_year), str(end_year), db_path], check=False)
+                    except Exception as e:
+                        logger.warning(f"Failed to run batch import script {batch_script}: {e}")
+                else:
+                    # Fallback: call per-year importer script if available
+                    for year in range(start_year, end_year + 1):
+                        url = f"https://nvd.nist.gov/feeds/json/cve/2.0/nvdcve-2.0-{year}.json.gz"
+                        logger.info(f"Importing NVD year {year} from {url}")
+                        script_path = find_script('nvd_import_full.py')
+                        if script_path:
+                            try:
+                                subprocess.run([sys.executable, script_path, '--feed-url', url, '--db', db_path], check=False)
+                            except Exception as e:
+                                logger.warning(f"Failed to run importer {script_path}: {e}")
+                        else:
+                            logger.error(f"Importer script nvd_import_full.py not found in any candidate paths; skipping year {year}")
+
+                    # Import modified feed using nvd_update_modified.py if present
+                    modurl = "https://nvd.nist.gov/feeds/json/cve/2.0/nvdcve-2.0-modified.json.gz"
+                    script_path = find_script('nvd_update_modified.py')
                     if script_path:
                         try:
-                            subprocess.run([sys.executable, script_path, '--feed-url', url, '--db', db_path], check=False)
-                            continue
-                        except FileNotFoundError:
-                            logger.warning(f"Python executable not found for running {script_path}")
+                            subprocess.run([sys.executable, script_path, '--url', modurl, '--db', db_path], check=False)
                         except Exception as e:
-                            logger.warning(f"Failed to start subprocess for {script_path}: {e}")
-
-                    # fallback: try to import module and call main() in-process
-                    try:
-                        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'scripts'))
-                        import nvd_import_full as nif
-                        try:
-                            nif.main_args = (url, db_path)
-                        except Exception:
-                            pass
-                        # call main via its CLI entry
-                        try:
-                            nif.main()
-                        except TypeError:
-                            # older style main with argparse - call as script via run
-                            pass
-                    except Exception as e:
-                        logger.error(f"In-process import of year {year} failed: {e}")
-
-                # Finally import modified feed
-                modurl = "https://nvd.nist.gov/feeds/json/cve/2.0/nvdcve-2.0-modified.json.gz"
-                logger.info(f"Importing modified feed from {modurl}")
-                script_path = find_script('nvd_update_modified.py')
-                if script_path:
-                    try:
-                        subprocess.run([sys.executable, script_path, '--url', modurl, '--db', db_path], check=False)
-                    except Exception as e:
-                        logger.warning(f"Failed to start subprocess for {script_path}: {e}")
-                else:
-                    try:
-                        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'scripts'))
-                        import nvd_update_modified as num
-                        try:
-                            num.main()
-                        except Exception:
-                            pass
-                    except Exception as e:
-                        logger.error(f"In-process modified-feed import failed: {e}")
+                            logger.warning(f"Failed to run modified-feed importer {script_path}: {e}")
+                    else:
+                        logger.error("Modified-feed importer nvd_update_modified.py not found; modified feed not imported")
 
                 logger.info(f"Background NVD import finished (target DB: {db_path})")
             except Exception as e:
