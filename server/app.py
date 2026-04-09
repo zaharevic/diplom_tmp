@@ -292,6 +292,105 @@ async def nvd_import_status():
     return JSONResponse(status_copy)
 
 
+# Vulnerability risk updater status tracker (EPSS + CISA KEV)
+vuln_risk_status = {
+    'running': False,
+    'start_time': None,
+    'last_message': None,
+    'finished': False,
+    'error': None,
+}
+vuln_risk_status_lock = threading.Lock()
+
+
+@app.post("/api/vuln-risk/update")
+async def trigger_vuln_risk_update(background: bool = True):
+    """Trigger an update of vuln_risk (fetch EPSS + CISA KEV and update DB).
+
+    If `background` is true (default), the update runs in a background thread
+    and this endpoint returns immediately with status started. If false, it
+    runs synchronously.
+    """
+    try:
+        with vuln_risk_status_lock:
+            if vuln_risk_status.get('running'):
+                return JSONResponse({'status': 'already_running'}, status_code=409)
+
+        def run_update():
+            try:
+                with vuln_risk_status_lock:
+                    vuln_risk_status['running'] = True
+                    vuln_risk_status['start_time'] = datetime.now().isoformat()
+                    vuln_risk_status['last_message'] = 'Starting vuln_risk update'
+                    vuln_risk_status['finished'] = False
+                    vuln_risk_status['error'] = None
+
+                # find script in candidate locations
+                def find_script(name):
+                    base1 = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                    candidates = [
+                        os.path.join(base1, 'scripts', name),
+                        os.path.join(os.getcwd(), 'scripts', name),
+                        os.path.join('/app', 'scripts', name),
+                        os.path.join(base1, name),
+                    ]
+                    for p in candidates:
+                        try:
+                            if os.path.exists(p):
+                                return p
+                        except Exception:
+                            continue
+                    return None
+
+                script = find_script('import_epss_kev.py')
+                if not script:
+                    with vuln_risk_status_lock:
+                        vuln_risk_status['error'] = 'import_epss_kev.py not found'
+                        vuln_risk_status['last_message'] = 'Script not found'
+                        vuln_risk_status['running'] = False
+                        vuln_risk_status['finished'] = True
+                    return
+
+                with vuln_risk_status_lock:
+                    vuln_risk_status['last_message'] = f'Running {script}'
+
+                subprocess.run([sys.executable, script, '--db', DB_PATH], check=False)
+
+                with vuln_risk_status_lock:
+                    vuln_risk_status['last_message'] = 'Update completed'
+                    vuln_risk_status['running'] = False
+                    vuln_risk_status['finished'] = True
+            except Exception as e:
+                logger.error(f"vuln_risk update failed: {e}")
+                with vuln_risk_status_lock:
+                    vuln_risk_status['running'] = False
+                    vuln_risk_status['finished'] = True
+                    vuln_risk_status['error'] = str(e)
+                    vuln_risk_status['last_message'] = 'Update failed'
+
+        if background:
+            t = threading.Thread(target=run_update, daemon=True)
+            t.start()
+            return JSONResponse({'status': 'started'})
+        else:
+            run_update()
+            return JSONResponse({'status': 'completed'})
+    except Exception as e:
+        logger.error(f"trigger_vuln_risk_update error: {e}")
+        return JSONResponse({'error': str(e)}, status_code=500)
+
+
+@app.get("/api/vuln-risk/status")
+async def vuln_risk_update_status():
+    """Return status of the EPSS/KEV vuln_risk updater."""
+    try:
+        with vuln_risk_status_lock:
+            status_copy = dict(vuln_risk_status)
+    except Exception:
+        status_copy = {'running': False, 'finished': False, 'error': 'status unavailable'}
+    return JSONResponse(status_copy)
+
+
 @app.post("/login")
 async def login(request: Request, response: Response):
     """Handle login form submission."""
