@@ -105,6 +105,18 @@ if NVD_API_KEY:
 else:
     logger.warning(f"NVD_API_KEY not set; using public NVD API (limited rate)")
 
+# Import status tracker for background NVD import
+import_status = {
+    'running': False,
+    'start_time': None,
+    'current_year': None,
+    'total_years': None,
+    'last_message': None,
+    'finished': False,
+    'error': None,
+}
+import_status_lock = threading.Lock()
+
 
 # ==================== AUTHENTICATION ROUTES ====================
 
@@ -150,6 +162,18 @@ def ensure_nvd_populated():
                 start_year = 2002
                 end_year = datetime.now().year
                 logger.info(f"Starting background NVD import into {db_path} (years {start_year}-{end_year})")
+                # mark status
+                try:
+                    with import_status_lock:
+                        import_status['running'] = True
+                        import_status['start_time'] = datetime.now().isoformat()
+                        import_status['current_year'] = None
+                        import_status['total_years'] = end_year - start_year + 1
+                        import_status['last_message'] = 'Started background import'
+                        import_status['finished'] = False
+                        import_status['error'] = None
+                except Exception:
+                    pass
 
                 # helper to find script path in several likely locations
                 def find_script(script_name: str):
@@ -171,6 +195,9 @@ def ensure_nvd_populated():
                 batch_script = find_script('import_all_nvd_years.sh') or find_script('Import-All-NVD-Years.ps1')
                 if batch_script:
                     try:
+                        with import_status_lock:
+                            import_status['last_message'] = f'Running batch script {batch_script}'
+                        logger.info(f"Running batch import script: {batch_script}")
                         if batch_script.endswith('.sh'):
                             logger.info(f"Running batch import script: {batch_script}")
                             subprocess.run(['bash', batch_script, str(start_year), str(end_year), db_path], check=False)
@@ -180,34 +207,65 @@ def ensure_nvd_populated():
                             subprocess.run(['pwsh', '-File', batch_script, str(start_year), str(end_year), db_path], check=False)
                     except Exception as e:
                         logger.warning(f"Failed to run batch import script {batch_script}: {e}")
+                        with import_status_lock:
+                            import_status['error'] = str(e)
                 else:
                     # Fallback: call per-year importer script if available
                     for year in range(start_year, end_year + 1):
                         url = f"https://nvd.nist.gov/feeds/json/cve/2.0/nvdcve-2.0-{year}.json.gz"
                         logger.info(f"Importing NVD year {year} from {url}")
+                        with import_status_lock:
+                            import_status['current_year'] = year
+                            import_status['last_message'] = f'Importing year {year}'
                         script_path = find_script('nvd_import_full.py')
                         if script_path:
                             try:
                                 subprocess.run([sys.executable, script_path, '--feed-url', url, '--db', db_path], check=False)
                             except Exception as e:
                                 logger.warning(f"Failed to run importer {script_path}: {e}")
+                                with import_status_lock:
+                                    import_status['last_message'] = f'Failed to run importer for year {year}: {e}'
                         else:
                             logger.error(f"Importer script nvd_import_full.py not found in any candidate paths; skipping year {year}")
+                            with import_status_lock:
+                                import_status['last_message'] = f'nvd_import_full.py not found; skipped year {year}'
 
                     # Import modified feed using nvd_update_modified.py if present
                     modurl = "https://nvd.nist.gov/feeds/json/cve/2.0/nvdcve-2.0-modified.json.gz"
                     script_path = find_script('nvd_update_modified.py')
                     if script_path:
                         try:
+                            with import_status_lock:
+                                import_status['last_message'] = 'Importing modified feed'
                             subprocess.run([sys.executable, script_path, '--url', modurl, '--db', db_path], check=False)
                         except Exception as e:
                             logger.warning(f"Failed to run modified-feed importer {script_path}: {e}")
+                            with import_status_lock:
+                                import_status['error'] = str(e)
                     else:
                         logger.error("Modified-feed importer nvd_update_modified.py not found; modified feed not imported")
+                        with import_status_lock:
+                            import_status['last_message'] = 'modified importer not found'
 
                 logger.info(f"Background NVD import finished (target DB: {db_path})")
+                try:
+                    with import_status_lock:
+                        import_status['running'] = False
+                        import_status['finished'] = True
+                        import_status['last_message'] = 'Import finished'
+                        import_status['current_year'] = None
+                except Exception:
+                    pass
             except Exception as e:
                 logger.error(f"Background NVD import failed: {e}")
+                try:
+                    with import_status_lock:
+                        import_status['running'] = False
+                        import_status['finished'] = True
+                        import_status['error'] = str(e)
+                        import_status['last_message'] = 'Import failed'
+                except Exception:
+                    pass
 
         t = threading.Thread(target=importer_thread, args=(found,), daemon=True)
         t.start()
@@ -221,6 +279,17 @@ def ensure_nvd_populated():
 async def login_page():
     """Render login page."""
     return get_login_page().replace("{error_html}", "")
+
+
+@app.get("/api/nvd-import/status")
+async def nvd_import_status():
+    """Return status of background NVD import."""
+    try:
+        with import_status_lock:
+            status_copy = dict(import_status)
+    except Exception:
+        status_copy = {'running': False, 'finished': False, 'error': 'status unavailable'}
+    return JSONResponse(status_copy)
 
 
 @app.post("/login")
