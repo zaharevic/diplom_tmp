@@ -390,6 +390,7 @@ async def collect(request: Request):
         # Ensure host metadata row exists (upsert) so host appears in /hosts
         hostname_val = payload.get("hostname", "unknown")
         try:
+            logger.debug(f"Upserting host metadata for '{hostname_val}'")
             c.execute(
                 """
                 INSERT INTO hosts (host, created_at, updated_at)
@@ -398,11 +399,23 @@ async def collect(request: Request):
                 """,
                 (hostname_val,)
             )
-        except Exception:
+            logger.debug("Upsert executed")
+        except Exception as e:
+            logger.warning(f"Upsert failed (falling back): {e}")
             # Fallback for older SQLite versions without UPSERT syntax
             c.execute("SELECT host FROM hosts WHERE host = ?", (hostname_val,))
-            if not c.fetchone():
+            existing = c.fetchone()
+            logger.debug(f"Existing host row: {existing}")
+            if not existing:
                 c.execute("INSERT INTO hosts (host, created_at, updated_at) VALUES (?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)", (hostname_val,))
+                logger.debug("Inserted host row via fallback insert")
+        # Log hosts count for debugging
+        try:
+            c.execute("SELECT COUNT(*) FROM hosts")
+            hosts_count_now = c.fetchone()[0]
+            logger.info(f"Hosts table row count after upsert: {hosts_count_now}")
+        except Exception as e:
+            logger.error(f"Error querying hosts count: {e}")
         conn.commit()
 
     logger.info(f"Report received from {host}: id={report_id}, software_count={len(software_list)}, saved to {path}")
