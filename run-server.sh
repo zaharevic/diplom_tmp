@@ -74,6 +74,7 @@ run_container() {
             --name ${CONTAINER_NAME} \
             -p ${PORT}:8000 \
             -v ${PWD}/${DATA_DIR}:/data/reports \
+            -v ${PWD}/${SERVER_DIR}:/app \
             --env-file .env \
             -e DB_PATH="/data/reports/vuln_collector.db" \
             -e DATA_DIR="/data/reports" \
@@ -85,6 +86,7 @@ run_container() {
             --name ${CONTAINER_NAME} \
             -p ${PORT}:8000 \
             -v ${PWD}/${DATA_DIR}:/data/reports \
+            -v ${PWD}/${SERVER_DIR}:/app \
             -e API_KEY="${API_KEY}" \
             -e NVD_API_KEY="${NVD_API_KEY}" \
             -e DB_PATH="/data/reports/vuln_collector.db" \
