@@ -497,7 +497,7 @@
                     <td class="checkbox-col">
                         <input type="checkbox" 
                                data-name="${sw.original_name}" 
-                               onchange="togglePackage(${JSON.stringify(sw.original_name)}, this.checked)">
+                               onchange='togglePackage(${JSON.stringify(sw.original_name)}, this.checked)'>
                     </td>
                     <td><strong>${sw.original_name}</strong></td>
                     <td><code>${sw.normalized_for_nvd}</code></td>
@@ -508,8 +508,8 @@
                     <td>${sw.cached ? '<span style="color:#d32f2f; font-weight:600;">' + sw.cves_found + ' CVE(s)</span>' : '<span style="color:#999;">-</span>'}</td>
                     <td>
                         <div class="action-btns">
-                            <button class="btn-small btn-force" onclick="forceCheck(${JSON.stringify(sw.original_name)})">⚡ Force Check</button>
-                            <button class="btn-small" onclick="viewCVEs(${JSON.stringify(sw.original_name)})">🔍 View CVEs</button>
+                            <button class="btn-small btn-force" onclick='forceCheck(${JSON.stringify(sw.original_name)})'>⚡ Force Check</button>
+                            <button class="btn-small" onclick='viewCVEs(${JSON.stringify(sw.original_name)})'>🔍 View CVEs</button>
                         </div>
                     </td>
                 </tr>
