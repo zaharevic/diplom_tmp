@@ -447,6 +447,15 @@
                 <button class="btn-cancel" onclick="closeEditModal()">Cancel</button>
             </div>
         </div>
+            <div class="modal" id="cveModal">
+                <div class="modal-content" style="max-width:900px;">
+                    <h2 id="cveModalTitle">CVEs</h2>
+                    <div id="cveModalBody">Loading...</div>
+                    <div class="modal-buttons">
+                        <button class="btn-save" onclick="closeCVEModal()">Close</button>
+                    </div>
+                </div>
+            </div>
     </div>
     
     <script>
@@ -499,7 +508,8 @@
                     <td>${sw.cached ? '<span style="color:#d32f2f; font-weight:600;">' + sw.cves_found + ' CVE(s)</span>' : '<span style="color:#999;">-</span>'}</td>
                     <td>
                         <div class="action-btns">
-                            <button class="btn-small btn-force" onclick="forceCheck('${sw.original_name}')">⚡ Force Check</button>
+                            <button class="btn-small btn-force" onclick="forceCheck(${JSON.stringify(sw.original_name)})">⚡ Force Check</button>
+                            <button class="btn-small" onclick="viewCVEs(${JSON.stringify(sw.original_name)})">🔍 View CVEs</button>
                         </div>
                     </td>
                 </tr>
@@ -668,6 +678,58 @@
             } catch (err) {
                 alert('❌ Force check failed: ' + err.message);
             }
+        }
+
+        async function viewCVEs(packageName) {
+            const modal = document.getElementById('cveModal');
+            const body = document.getElementById('cveModalBody');
+            const title = document.getElementById('cveModalTitle');
+            title.textContent = `CVEs for ${packageName}`;
+            body.innerHTML = 'Loading...';
+            modal.classList.add('active');
+            try {
+                const resp = await fetch(`/api/package-cves?package_name=${encodeURIComponent(packageName)}`);
+                const data = await resp.json();
+                if (data.error) {
+                    body.innerHTML = `<div style="color:#d32f2f">Error: ${data.error}</div>`;
+                    return;
+                }
+                if (!data.cves || data.cves.length === 0) {
+                    body.innerHTML = '<div style="color:#666">No CVEs found for this package in local NVD DB.</div>';
+                    return;
+                }
+
+                const rows = data.cves.map(c => {
+                    const cpeHtml = (c.cpe_matches && c.cpe_matches.length)
+                        ? '<ul>' + c.cpe_matches.slice(0,10).map(x => `<li><code>${x}</code></li>`).join('') + '</ul>'
+                        : '-';
+                    const epss = c.ep_ss ? Number(c.ep_ss).toFixed(6) : '-';
+                    const kev = c.in_kev ? '<strong style="color:#c62828">YES</strong>' : 'NO';
+                    return `
+                        <tr>
+                            <td><a href="https://nvd.nist.gov/vuln/detail/${c.cve_id}" target="_blank">${c.cve_id}</a></td>
+                            <td>${c.cvss || '-'}</td>
+                            <td>${epss}</td>
+                            <td>${kev}</td>
+                            <td style="max-width:400px">${c.description || '-'}${cpeHtml}</td>
+                        </tr>`;
+                }).join('');
+
+                body.innerHTML = `
+                    <div style="overflow:auto; max-height:60vh">
+                        <table style="width:100%; border-collapse:collapse">
+                            <thead><tr><th style="text-align:left">CVE</th><th>CVSS</th><th>EPSS</th><th>KEV</th><th>Description / CPEs</th></tr></thead>
+                            <tbody>${rows}</tbody>
+                        </table>
+                    </div>
+                `;
+            } catch (err) {
+                body.innerHTML = `<div style="color:#d32f2f">Error: ${err.message}</div>`;
+            }
+        }
+
+        function closeCVEModal() {
+            document.getElementById('cveModal').classList.remove('active');
         }
         
         async function refreshSoftware() {

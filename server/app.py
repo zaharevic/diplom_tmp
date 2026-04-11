@@ -23,7 +23,14 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Import NVD module
-from nvd import NVDClient, print_nvd_log_summary, normalize_for_nvd, init_local_nvd_db
+from nvd import (
+    NVDClient,
+    print_nvd_log_summary,
+    normalize_for_nvd,
+    init_local_nvd_db,
+    local_find_cves_for_cpe,
+    get_cpe_keywords,
+)
 from auth import create_session, is_session_valid, invalidate_session, verify_password
 from pages import (
     get_login_page, get_dashboard_page, get_hosts_page, 
@@ -912,6 +919,101 @@ async def get_hosts():
     
     logger.info(f"Retrieved {len(hosts)} hosts")
     return JSONResponse({"hosts": hosts})
+
+
+def find_local_nvd_db():
+    """Locate the local NVD DB file using common candidate paths."""
+    local_db = os.environ.get("LOCAL_NVD_DB", "nvd_local.db")
+    candidates = [
+        local_db,
+        os.path.join(os.getcwd(), local_db),
+        os.path.join(os.path.dirname(__file__), '..', local_db),
+        os.path.join(os.getcwd(), DATA_DIR, os.path.basename(local_db)),
+        os.path.join('/data/reports', os.path.basename(local_db)),
+        os.path.join('/app', local_db),
+    ]
+    for p in candidates:
+        try:
+            if os.path.exists(p):
+                return os.path.abspath(p)
+        except Exception:
+            continue
+    return None
+
+
+@app.get("/api/package-cves")
+async def package_cves(package_name: str, limit: int = 200):
+    """Return CVEs and CPE matches for a package using the local NVD DB.
+
+    Response includes: cve_id, cvss, description, cpe_matches[], ep_ss, in_kev
+    """
+    if not package_name:
+        raise HTTPException(status_code=400, detail="package_name required")
+
+    nvd_db = find_local_nvd_db()
+    if not nvd_db:
+        return JSONResponse({"error": "local NVD DB not found"}, status_code=404)
+
+    keywords = get_cpe_keywords(package_name)
+    found_cves = {}
+
+    # query local NVD DB for each keyword
+    try:
+        conn = sqlite3.connect(nvd_db)
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+
+        for kw in keywords:
+            like = f"%{kw}%"
+            c.execute(
+                "SELECT DISTINCT cve.id AS id, cve.cvss_score AS cvss, substr(cve.description,1,1000) as description FROM cve JOIN cpe_match ON cve.id = cpe_match.cve_id WHERE cpe_match.cpe23 LIKE ? LIMIT ?",
+                (like, limit),
+            )
+            for r in c.fetchall():
+                cid = r['id'].upper()
+                if cid not in found_cves:
+                    found_cves[cid] = {
+                        'cve_id': cid,
+                        'cvss': r['cvss'],
+                        'description': r['description'],
+                        'cpe_matches': [],
+                        'ep_ss': 0.0,
+                        'in_kev': False,
+                    }
+
+        # collect cpe matches for found CVEs
+        if found_cves:
+            ids = tuple(found_cves.keys())
+            # build parameter placeholders
+            placeholders = ','.join('?' for _ in ids)
+            q = f"SELECT DISTINCT cve_id, cpe23 FROM cpe_match WHERE cve_id IN ({placeholders})"
+            c.execute(q, ids)
+            for r in c.fetchall():
+                cid = r['cve_id'].upper()
+                if cid in found_cves:
+                    found_cves[cid]['cpe_matches'].append(r['cpe23'])
+
+        conn.close()
+    except Exception as e:
+        logger.error(f"Error querying local NVD DB for package {package_name}: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+    # enrich with EPSS/KEV data from app DB (vuln_risk)
+    if found_cves:
+        with get_db() as appconn:
+            c2 = appconn.cursor()
+            for cid in list(found_cves.keys()):
+                try:
+                    c2.execute("SELECT ep_ss, in_kev FROM vuln_risk WHERE cve_id = ?", (cid,))
+                    row = c2.fetchone()
+                    if row:
+                        found_cves[cid]['ep_ss'] = row[0] or 0.0
+                        found_cves[cid]['in_kev'] = bool(row[1])
+                except Exception:
+                    continue
+
+    results = list(found_cves.values())
+    return JSONResponse({"package": package_name, "keywords": keywords, "cves": results})
 
 
 @app.get("/api/check-cves")
