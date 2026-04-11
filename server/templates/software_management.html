@@ -384,10 +384,10 @@
             <h2>📦 Manage Software</h2>
             
             <div class="filter-tabs">
-                <button class="filter-btn active" onclick="filterByStatus('all')">All</button>
-                <button class="filter-btn" onclick="filterByStatus('new')">New</button>
-                <button class="filter-btn" onclick="filterByStatus('in_task')">In Task</button>
-                <button class="filter-btn" onclick="filterByStatus('ignore')">Ignored</button>
+                <button class="filter-btn active" onclick="filterByStatus('all', this)">All</button>
+                <button class="filter-btn" onclick="filterByStatus('new', this)">New</button>
+                <button class="filter-btn" onclick="filterByStatus('in_task', this)">In Task</button>
+                <button class="filter-btn" onclick="filterByStatus('ignore', this)">Ignored</button>
             </div>
             
             <div class="bulk-actions" id="bulkActions">
@@ -469,7 +469,7 @@
                 allSoftware = await resp.json();
             } catch (err) {
                 console.error('Error loading software:', err);
-                document.getElementById('softwareBody').innerHTML = '<tr><td colspan="6" style="color:#d32f2f;">Error loading data</td></tr>';
+                document.getElementById('softwareBody').innerHTML = '<tr><td colspan="9" style="color:#d32f2f;">Error loading data</td></tr>';
             }
         }
         
@@ -497,7 +497,7 @@
                     <td class="checkbox-col">
                         <input type="checkbox" 
                                data-name="${sw.original_name}" 
-                               onchange="togglePackage('${sw.original_name}', this.checked)">
+                               onchange="togglePackage(${JSON.stringify(sw.original_name)}, this.checked)">
                     </td>
                     <td><strong>${sw.original_name}</strong></td>
                     <td><code>${sw.normalized_for_nvd}</code></td>
@@ -515,10 +515,15 @@
                 </tr>
             `).join('');
             
-            // Restore checkboxes for selected packages
+            // Restore checkboxes for selected packages (safe attribute comparison)
             selectedPackages.forEach(pkgName => {
-                const checkbox = document.querySelector(`input[data-name="${pkgName}"]`);
-                if (checkbox) checkbox.checked = true;
+                document.querySelectorAll('.checkbox-col input').forEach(cb => {
+                    try {
+                        if (cb.getAttribute('data-name') === pkgName) cb.checked = true;
+                    } catch (e) {
+                        // ignore
+                    }
+                });
             });
             
             updateBulkActionsUI();
@@ -608,10 +613,10 @@
             }
         }
         
-        function filterByStatus(status) {
+        function filterByStatus(status, btn) {
             currentFilter = status;
-            document.querySelectorAll('.filter-btn').forEach(btn => btn.classList.remove('active'));
-            event.target.classList.add('active');
+            document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+            try { if (btn) btn.classList.add('active'); } catch (e) {}
             clearSelection();
             renderSoftware();
         }
