@@ -65,12 +65,13 @@ def apply_modified_bytes(bts: bytes, db_path: str):
         cur.execute("INSERT OR REPLACE INTO cve(id, publishedDate, lastModifiedDate, cvss_score, description) VALUES(?,?,?,?,?)",
                     (cve_id, None, None, cvss, desc))
 
-        configurations = cve_obj.get('configurations') or {}
+        configurations = cve_obj.get('configurations') or []
         nodes = []
         if isinstance(configurations, dict):
             nodes = configurations.get('nodes', [])
         elif isinstance(configurations, list):
-            nodes = configurations
+            for cfg in configurations:
+                nodes.extend(cfg.get('nodes', []))
 
         for node in nodes:
             for match in extract_cpe_matches(node):
