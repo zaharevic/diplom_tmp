@@ -101,16 +101,16 @@ API_KEY = os.environ.get("API_KEY")
 NVD_API_KEY = os.environ.get("NVD_API_KEY")  # Optional NVD API key for higher rate limits
 
 if API_KEY:
-    logger.info(f"API_KEY configured; enforcing X-API-KEY header")
+    logger.info(f"API_KEY настроен; требуется заголовок X-API-KEY")
 
-# Initialize local NVD DB (creates nvd_local.db if missing)
+# Инициализировать локальную БД NVD (создаёт nvd_local.db если его нет)
 init_local_nvd_db()
-# Initialize NVD client
+# Инициализировать NVD клиент
 nvd_client = NVDClient(DB_PATH, api_key=NVD_API_KEY)
 if NVD_API_KEY:
-    logger.info(f"NVD_API_KEY configured for higher rate limits")
+    logger.info(f"NVD_API_KEY настроен для более высоких лимитов запросов")
 else:
-    logger.warning(f"NVD_API_KEY not set; using public NVD API (limited rate)")
+    logger.warning(f"NVD_API_KEY не установлен; используется открытый NVD API (ограниченный лимит)")
 
 # Import status tracker for background NVD import
 import_status = {
@@ -409,32 +409,32 @@ async def login(request: Request, response: Response):
             session_id = create_session()
             resp = RedirectResponse(url="/dashboard", status_code=302)
             resp.set_cookie("admin_session", session_id, max_age=12*3600, httponly=True)
-            logger.info(f"Admin login successful")
+            logger.info(f"Успешный вход администратора")
             return resp
         else:
-            logger.warning(f"Failed login attempt with incorrect password")
-            error_html = '<div class="error">Incorrect password</div>'
+            logger.warning(f"Неудачная попытка входа с неверным паролем")
+            error_html = '<div class="error">Неверный пароль</div>'
             return HTMLResponse(
                 get_login_page().replace("{error_html}", error_html),
                 status_code=401
             )
     except Exception as e:
-        logger.error(f"Login error: {e}")
+        logger.error(f"Ошибка при входе: {e}")
         return HTMLResponse(
-            get_login_page().replace("{error_html}", '<div class="error">Login error</div>'),
+            get_login_page().replace("{error_html}", '<div class="error">Ошибка входа</div>'),
             status_code=500
         )
 
 
 @app.post("/logout")
 async def logout(request: Request):
-    """Handle logout."""
+    """Обработать выход из системы."""
     session_id = get_session_id(request)
     if session_id:
         invalidate_session(session_id)
     response = RedirectResponse(url="/login", status_code=302)
     response.delete_cookie("admin_session")
-    logger.info(f"Admin logout")
+    logger.info(f"Выход администратора")
     return response
 
 
@@ -442,7 +442,7 @@ async def logout(request: Request):
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
-    """Redirect root to dashboard."""
+    """Перенаправить корень на панель."""
     return RedirectResponse(url="/dashboard", status_code=302)
 
 
@@ -485,7 +485,7 @@ async def set_host_criticality(request: Request):
 
         return RedirectResponse(url="/hosts", status_code=302)
     except Exception as e:
-        logger.error(f"Failed to set criticality: {e}")
+        logger.error(f"Ошибка при установке критичности: {e}")
         return JSONResponse({"error": str(e)}, status_code=400)
 
 
@@ -668,15 +668,15 @@ async def collect(request: Request):
     try:
         payload = await request.json()
     except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON")
+        raise HTTPException(status_code=400, detail="Неверный JSON")
 
-    # Check API key if configured
+    # Проверить API ключ если настроен
     if API_KEY:
         provided_key = request.headers.get("x-api-key") or request.headers.get("X-API-KEY")
         if provided_key != API_KEY:
-            logger.warning(f"Invalid or missing API key from {request.client.host}")
-            raise HTTPException(status_code=401, detail="Invalid or missing API key")
-        logger.debug(f"API key verified for {request.client.host}")
+            logger.warning(f"Неверный или отсутствующий API ключ от {request.client.host}")
+            raise HTTPException(status_code=401, detail="Неверный или отсутствующий API ключ")
+        logger.debug(f"API ключ проверен для {request.client.host}")
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     host = payload.get("hostname", "unknown")
@@ -785,47 +785,47 @@ async def collect(request: Request):
             logger.error(f"Error querying hosts count: {e}")
         conn.commit()
 
-    logger.info(f"Report received from {host}: id={report_id}, software_count={len(software_list)}, saved to {path}")
+    logger.info(f"Отчёт получен от {host}: id={report_id}, software_count={len(software_list)}, сохранено в {path}")
     return JSONResponse({"status": "ok", "saved_to": path, "report_id": report_id})
 
 
 @app.get("/api/hosts/ping")
 async def ping_host(hostname: str):
     """
-    Ping a host to check if it's online.
-    Returns online status based on ICMP/TCP ping.
+    Проверить Ping хоста - статус онлайн.
+    Возвращает статус онлайн на основе ICMP/TCP ping.
     """
     if not hostname:
-        raise HTTPException(status_code=400, detail="hostname required")
+        raise HTTPException(status_code=400, detail="требуется hostname")
     
     try:
-        # Try to resolve hostname and connect on port 22 (SSH) or 445 (SMB)
-        # If no response in 2 seconds, consider offline
+        # Пытаться разрешить hostname и подключиться к порту 22 (SSH) или 445 (SMB)
+        # Если нет ответа в 2 секунды, считать оффлайн
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(2)
         
-        # Try SSH first (port 22)
+        # Сначала пробуем SSH (порт 22)
         try:
             result = sock.connect_ex((hostname, 22))
             sock.close()
             is_online = (result == 0)
         except socket.gaierror:
-            # Hostname resolution failed
+            # Разрешение hostname не удалось
             is_online = False
         except Exception:
             is_online = False
         
-        logger.debug(f"Ping check for {hostname}: {'online' if is_online else 'offline'}")
+        logger.debug(f"Проверка ping для {hostname}: {'онлайн' if is_online else 'оффлайн'}")
         return JSONResponse({"hostname": hostname, "online": is_online})
     
     except Exception as e:
-        logger.error(f"Error pinging {hostname}: {e}")
+        logger.error(f"Ошибка при ping {hostname}: {e}")
         return JSONResponse({"hostname": hostname, "online": False})
 
 
 @app.get("/api/reports")
 async def get_reports(hostname: str = None, limit: int = 100):
-    """Get reports, optionally filtered by hostname."""
+    """Получить отчёты, опционально отфильтрованные по hostname."""
     with get_db() as conn:
         c = conn.cursor()
         if hostname:

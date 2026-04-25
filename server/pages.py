@@ -1,6 +1,6 @@
 """
-HTML page generators for vulnerability collector admin panel.
-Separate pages for: login, dashboard, package selection, hosts management.
+Генераторы HTML страниц для панели администратора сборщика уязвимостей.
+Отдельные страницы для: входа, панели, выбора пакетов, управления хостами.
 """
 
 import sqlite3
@@ -12,7 +12,7 @@ DB_PATH = "/data/reports/vuln_collector.db"
 
 @contextmanager
 def get_db():
-    """Context manager for database connections."""
+    """Менеджер контекста для подключений к БД."""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     try:
@@ -22,17 +22,17 @@ def get_db():
 
 
 def get_login_page() -> str:
-    """Generate login page HTML."""
+    """Генерировать страницу входа."""
     with open('templates/login.html', 'r', encoding='utf-8') as f:
         return f.read()
 
 
 def get_dashboard_page() -> str:
-    """Generate main dashboard with statistics."""
+    """Генерировать главную панель со статистикой."""
     with get_db() as conn:
         c = conn.cursor()
         
-        # Statistics
+        # Статистика
         c.execute("SELECT COUNT(*) FROM reports")
         reports_count = c.fetchone()[0]
         
@@ -54,7 +54,7 @@ def get_dashboard_page() -> str:
         c.execute("SELECT COUNT(*) FROM software_management WHERE status = 'ignore'")
         ignore_count = c.fetchone()[0]
         
-        # Recent reports
+        # Последние отчёты
         c.execute("""
             SELECT id, hostname, ip, os, received_at 
             FROM reports 
@@ -63,7 +63,7 @@ def get_dashboard_page() -> str:
         """)
         recent_reports = [dict(row) for row in c.fetchall()]
         
-        # Top vulnerable packages
+        # Топ уязвимых пакетов
         c.execute("""
             SELECT package_name, cves_found, cvss_max 
             FROM cve_cache 
@@ -97,10 +97,10 @@ def get_dashboard_page() -> str:
 
 
 def get_hosts_page() -> str:
-    """Generate hosts management page with ping status."""
+    """Генерировать страницу управления хостами с статусом ping."""
     with get_db() as conn:
         c = conn.cursor()
-        # Build unified set of hostnames from reports, software and hosts metadata
+        # Собрать объединённый набор имён хостов из reports, software и hosts метаданных
         c.execute("""
             SELECT h.hostname, r.ip, r.os, r.received_at,
                    IFNULL(s.software_count, 0) AS software_count,
@@ -123,7 +123,7 @@ def get_hosts_page() -> str:
         """)
         hosts = [dict(row) for row in c.fetchall()]
 
-        # For each host, fetch top risk score (if any)
+        # Для каждого хоста получить верхний риск-скор (если есть)
         hosts_rows = ""
         for h in hosts:
             hostname = h['hostname']
@@ -133,7 +133,7 @@ def get_hosts_page() -> str:
             top_risk_row = c.fetchone()
             top_risk = top_risk_row[0] if top_risk_row and top_risk_row[0] is not None else 0
 
-            # render criticality selector (1-5)
+            # отобразить селектор критичности (1-5)
             crit = int(h.get('criticality', 1)) if h.get('criticality') is not None else 1
             crit_options = ''.join([f'<option value="{i}"{" selected" if i==crit else ""}>{i}</option>' for i in range(1,6)])
 
@@ -150,9 +150,9 @@ def get_hosts_page() -> str:
                     <form method="POST" action="/api/hosts/criticality" style="display:inline;margin:0;">
                         <input type="hidden" name="hostname" value="{h['hostname']}">
                         <select name="criticality" style="padding:4px 6px;">{crit_options}</select>
-                        <button type="submit" style="padding:6px 10px; margin-left:6px; background:#2b6cb0; color:white; border:none; border-radius:4px;">Set</button>
+                        <button type="submit" style="padding:6px 10px; margin-left:6px; background:#2b6cb0; color:white; border:none; border-radius:4px;">Установить</button>
                     </form>
-                    <button onclick="viewSoftware('{h['hostname']}')" style="padding:6px 12px; background:#667eea; color:white; border:none; border-radius:5px; cursor:pointer; margin-left:8px;">View</button>
+                    <button onclick="viewSoftware('{h['hostname']}')" style="padding:6px 12px; background:#667eea; color:white; border:none; border-radius:5px; cursor:pointer; margin-left:8px;">Просмотр</button>
                 </td>
             </tr>'''
     
@@ -163,7 +163,7 @@ def get_hosts_page() -> str:
 
 
 def get_packages_page() -> str:
-    """Generate package selection page for scanning."""
+    """Генерировать страницу выбора пакетов для сканирования."""
     with get_db() as conn:
         c = conn.cursor()
         c.execute("SELECT DISTINCT hostname FROM reports ORDER BY hostname")
@@ -180,7 +180,7 @@ def get_packages_page() -> str:
 
 
 def get_software_management_page() -> str:
-    """Generate software management page with NVD name customization and status tracking."""
+    """Генерировать страницу управления ПО с пользовательской настройкой имён NVD и отслеживанием статуса."""
     with get_db() as conn:
         c = conn.cursor()
         c.execute("SELECT COUNT(*) FROM software_management WHERE status = 'new'")

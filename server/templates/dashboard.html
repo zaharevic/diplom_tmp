@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ru">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dashboard - Vulnerability Collector</title>
+    <title>Панель - Сборщик уязвимостей</title>
     <style>
         * {
             margin: 0;
@@ -159,51 +159,51 @@
 <body>
     <nav class="navbar">
         <div class="nav-container">
-            <div class="nav-logo">🛡️ Vulnerability Collector</div>
+            <div class="nav-logo">🛡️ Сборщик уязвимостей</div>
             <ul class="nav-links">
-                <li><a href="/dashboard" class="active">Dashboard</a></li>
-                <li><a href="/hosts">Hosts</a></li>
-                <li><a href="/packages">Packages</a></li>
-                <li><a href="/software-management">Software Management</a></li>
+                <li><a href="/dashboard" class="active">Панель</a></li>
+                <li><a href="/hosts">Хосты</a></li>
+                <li><a href="/packages">Пакеты</a></li>
+                <li><a href="/software-management">Управление ПО</a></li>
             </ul>
             <form method="POST" action="/logout" style="margin:0;">
-                <button class="logout-btn">Logout</button>
+                <button class="logout-btn">Выход</button>
             </form>
         </div>
     </nav>
 
     <div class="container">
-        <h1>📊 Dashboard</h1>
+        <h1>📊 Панель</h1>
 
         <div class="stats">
             <div class="stat-card">
-                <h3>Reports</h3>
+                <h3>Отчёты</h3>
                 <div class="number">{reports_count}</div>
             </div>
             <div class="stat-card">
-                <h3>Hosts</h3>
+                <h3>Хосты</h3>
                 <div class="number">{hosts_count}</div>
             </div>
             <div class="stat-card">
-                <h3>Software Packages</h3>
+                <h3>Пакеты ПО</h3>
                 <div class="number">{software_count}</div>
             </div>
             <div class="stat-card">
-                <h3>Vulnerable Packages</h3>
+                <h3>Уязвимые пакеты</h3>
                 <div class="number">{vulnerable_count}</div>
             </div>
         </div>
 
         <div class="section">
-            <h2>📋 Recent Reports</h2>
+            <h2>📋 Последние отчёты</h2>
             <table>
                 <thead>
                     <tr>
                         <th>ID</th>
-                        <th>Hostname</th>
+                        <th>Имя сервера</th>
                         <th>IP</th>
-                        <th>OS</th>
-                        <th>Received At</th>
+                        <th>ОС</th>
+                        <th>Получено</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -213,13 +213,13 @@
         </div>
 
         <div class="section">
-            <h2>⚠️ Top Vulnerable Packages</h2>
+            <h2>⚠️ ТОП уязвимых пакетов</h2>
             <table>
                 <thead>
                     <tr>
-                        <th>Package Name</th>
-                        <th>CVEs Found</th>
-                        <th>Max CVSS</th>
+                        <th>Название пакета</th>
+                        <th>Найдено CVE</th>
+                        <th>Макс. CVSS</th>
                     </tr>
                 </thead>
                 <tbody>

@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ru">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Hosts - Vulnerability Collector</title>
+    <title>Хосты - Сборщик уязвимостей</title>
     <style>
         * {
             margin: 0;
@@ -190,37 +190,37 @@
 <body>
     <nav class="navbar">
         <div class="nav-container">
-            <div class="nav-logo">🛡️ Vulnerability Collector</div>
+            <div class="nav-logo">🛡️ Сборщик уязвимостей</div>
             <ul class="nav-links">
-                <li><a href="/dashboard">Dashboard</a></li>
-                <li><a href="/hosts" class="active">Hosts</a></li>
-                <li><a href="/packages">Packages</a></li>
-                <li><a href="/software-management">Software Management</a></li>
+                <li><a href="/dashboard">Панель</a></li>
+                <li><a href="/hosts" class="active">Хосты</a></li>
+                <li><a href="/packages">Пакеты</a></li>
+                <li><a href="/software-management">Управление ПО</a></li>
             </ul>
             <form method="POST" action="/logout" style="margin:0;">
-                <button class="logout-btn">Logout</button>
+                <button class="logout-btn">Выход</button>
             </form>
         </div>
     </nav>
 
     <div class="container">
-        <h1>🖥️ Hosts Management</h1>
+        <h1>🖥️ Управление хостами</h1>
 
         <div class="section">
-            <h2>📋 Host List</h2>
+            <h2>📋 Список хостов</h2>
             <table>
                 <thead>
                     <tr>
-                        <th>Hostname</th>
-                        <th>IP Address</th>
-                        <th>OS</th>
-                        <th>Last Report</th>
-                        <th>Ping Status</th>
-                        <th>Software Count</th>
-                        <th>Risk Count</th>
-                        <th>Top Risk</th>
-                        <th>Criticality</th>
-                        <th>Actions</th>
+                        <th>Имя хоста</th>
+                        <th>IP адрес</th>
+                        <th>ОС</th>
+                        <th>Последний отчёт</th>
+                        <th>Статус Ping</th>
+                        <th>Кол-во ПО</th>
+                        <th>Рисков</th>
+                        <th>Макс. риск</th>
+                        <th>Критичность</th>
+                        <th>Действия</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -232,19 +232,19 @@
 
     <div class="modal" id="softwareModal">
         <div class="modal-content">
-            <h2 id="modalHostname">Software Details</h2>
+            <h2 id="modalHostname">Детали ПО</h2>
             <table>
                 <thead>
                     <tr>
-                        <th>Package Name</th>
-                        <th>Version</th>
+                        <th>Название пакета</th>
+                        <th>Версия</th>
                     </tr>
                 </thead>
                 <tbody id="softwareBody">
                 </tbody>
             </table>
             <div class="modal-buttons">
-                <button class="btn-close" onclick="closeSoftwareModal()">Close</button>
+                <button class="btn-close" onclick="closeSoftwareModal()">Закрыть</button>
             </div>
         </div>
     </div>
@@ -252,7 +252,7 @@
     <script>
         async function pingHost(hostname) {
             const statusEl = document.getElementById(`ping-${hostname}`);
-            statusEl.textContent = '🔄 Checking...';
+            statusEl.textContent = '🔄 Проверка...';
             statusEl.className = 'ping-status checking';
 
             try {
@@ -260,14 +260,14 @@
                 const data = await response.json();
 
                 if (data.online) {
-                    statusEl.textContent = '✓ Online';
+                    statusEl.textContent = '✓ Онлайн';
                     statusEl.className = 'ping-status online';
                 } else {
-                    statusEl.textContent = '✗ Offline';
+                    statusEl.textContent = '✗ Оффлайн';
                     statusEl.className = 'ping-status offline';
                 }
             } catch (err) {
-                statusEl.textContent = '? Error';
+                statusEl.textContent = '? Ошибка';
                 statusEl.className = 'ping-status offline';
             }
         }
@@ -284,11 +284,11 @@
             fetch(`/api/scan-host?hostname=${encodeURIComponent(hostname)}`)
                 .then(r => r.json())
                 .then(data => {
-                    document.getElementById('modalHostname').textContent = `Software on ${hostname}`;
+                    document.getElementById('modalHostname').textContent = `ПО на ${hostname}`;
                     const tbody = document.getElementById('softwareBody');
                     tbody.innerHTML = '';
                     data.software.forEach(pkg => {
-                        const row = `<tr><td>${pkg.name}</td><td>${pkg.version || 'N/A'}</td></tr>`;
+                        const row = `<tr><td>${pkg.name}</td><td>${pkg.version || 'Н/Д'}</td></tr>`;
                         tbody.innerHTML += row;
                     });
                     document.getElementById('softwareModal').classList.add('active');

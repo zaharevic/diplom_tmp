@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ru">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Packages - Vulnerability Collector</title>
+    <title>Пакеты - Сборщик уязвимостей</title>
     <style>
         * {
             margin: 0;
@@ -198,40 +198,40 @@
 <body>
     <nav class="navbar">
         <div class="nav-container">
-            <div class="nav-logo">🛡️ Vulnerability Collector</div>
+            <div class="nav-logo">🛡️ Сборщик уязвимостей</div>
             <ul class="nav-links">
-                <li><a href="/dashboard">Dashboard</a></li>
-                <li><a href="/hosts">Hosts</a></li>
-                <li><a href="/packages" class="active">Packages</a></li>
-                <li><a href="/software-management">Software Management</a></li>
+                <li><a href="/dashboard">Панель</a></li>
+                <li><a href="/hosts">Хосты</a></li>
+                <li><a href="/packages" class="active">Пакеты</a></li>
+                <li><a href="/software-management">Управление ПО</a></li>
             </ul>
             <form method="POST" action="/logout" style="margin:0;">
-                <button class="logout-btn">Logout</button>
+                <button class="logout-btn">Выход</button>
             </form>
         </div>
     </nav>
 
     <div class="container">
-        <h1>📦 Package Selection</h1>
+        <h1>📦 Выбор пакетов</h1>
 
         <div class="section">
-            <h2>🔍 Select Host & Packages</h2>
+            <h2>🔍 Выберите хост и пакеты</h2>
 
             <div class="form-group">
-                <label for="hostSelect">Select Host:</label>
+                <label for="hostSelect">Выберите хост:</label>
                 <select id="hostSelect">
-                    <option value="">Choose a host...</option>
+                    <option value="">Выберите хост...</option>
                     {hosts_options}
                 </select>
             </div>
 
             <div id="packagesDiv" style="display:none;">
-                <h3>Available Packages:</h3>
+                <h3>Доступные пакеты:</h3>
                 <div class="packages-grid" id="packagesGrid">
                     <!-- Packages will be loaded here -->
                 </div>
 
-                <button class="scan-btn" onclick="scanSelectedPackages()">🔍 Scan Selected Packages</button>
+                <button class="scan-btn" onclick="scanSelectedPackages()">🔍 Сканировать выбранные пакеты</button>
                 <div id="statusDiv"></div>
                 <div id="scanResults"></div>
             </div>
@@ -276,17 +276,17 @@
 
         async function scanSelectedPackages() {
             const hostname = document.getElementById('hostSelect').value;
-            if (!hostname) return alert('Select a host first');
+            if (!hostname) return alert('Сначала выберите хост');
 
             const checked = Array.from(document.querySelectorAll('.pkg-checkbox')).filter(c => c.checked).map(c => ({
                 name: c.dataset.name,
                 version: c.dataset.version || null
             }));
 
-            if (checked.length === 0) return alert('Select at least one package');
+            if (checked.length === 0) return alert('Выберите хотя бы один пакет');
 
             const statusDiv = document.getElementById('statusDiv');
-            statusDiv.innerHTML = '<div id="scanStatus" style="color:#667eea;">🔄 Starting scan...</div>';
+            statusDiv.innerHTML = '<div id="scanStatus" style="color:#667eea;">🔄 Начинаем сканирование...</div>';
 
             try {
                 const resp = await fetch('/api/scan-packages', {
@@ -295,29 +295,29 @@
                     body: JSON.stringify({ hostname, packages: checked })
                 });
 
-                if (!resp.ok) throw new Error('Scan failed');
+                if (!resp.ok) throw new Error('Сканирование не удалось');
                 const result = await resp.json();
 
                 let html = `<div class="scan-results">
-                    <h3>✓ Scan Complete</h3>
-                    <p>Checked: <strong>${result.checked}</strong> packages</p>
-                    <p>Vulnerable: <strong>${result.vulnerable_count}</strong> packages</p>`;
+                    <h3>✓ Сканирование завершено</h3>
+                    <p>Проверено: <strong>${result.checked}</strong> пакетов</p>
+                    <p>Уязвимых: <strong>${result.vulnerable_count}</strong> пакетов</p>`;
 
                 if (result.vulnerable_packages && result.vulnerable_packages.length) {
-                    html += '<h4>Vulnerable Packages:</h4><ul>';
+                    html += '<h4>Уязвимые пакеты:</h4><ul>';
                     result.vulnerable_packages.forEach(v => {
-                        html += `<li><strong>${v.name}</strong> v${v.version || 'N/A'} — ${v.cves_found} CVE(s), CVSS max: ${v.cvss_max.toFixed(1)}</li>`;
+                        html += `<li><strong>${v.name}</strong> v${v.version || 'Н/Д'} — ${v.cves_found} CVE, макс CVSS: ${v.cvss_max.toFixed(1)}</li>`;
                     });
                     html += '</ul>';
                 } else {
-                    html += '<p style="color:green;">No vulnerabilities found!</p>';
+                    html += '<p style="color:green;">Уязвимостей не найдено!</p>';
                 }
 
                 html += '</div>';
                 document.getElementById('scanResults').innerHTML = html;
                 statusDiv.innerHTML = '';
             } catch (err) {
-                statusDiv.innerHTML = `<div id="scanStatus" style="color:#d32f2f;">❌ Error: ${err.message}</div>`;
+                statusDiv.innerHTML = `<div id="scanStatus" style="color:#d32f2f;">❌ Ошибка: ${err.message}</div>`;
             }
         }
 
