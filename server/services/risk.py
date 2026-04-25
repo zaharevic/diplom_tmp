@@ -28,8 +28,14 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-EPSS_URL = "https://epss.empiricalsecurity.com/epss_scores-current.csv.gz"
-KEV_URL  = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
+EPSS_BASE_URL = "https://epss.empiricalsecurity.com"
+KEV_URL       = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
+
+
+def _epss_url() -> str:
+    """Return dated EPSS URL for today (server gives relative redirect from -current)."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    return f"{EPSS_BASE_URL}/epss_scores-{today}.csv.gz"
 
 
 def compute_risk(
@@ -58,8 +64,10 @@ def import_epss(db_path: str) -> int:
     if not _has_requests:
         raise RuntimeError("requests library not available")
 
-    logger.info(f"Downloading EPSS scores from {EPSS_URL}")
-    resp = requests.get(EPSS_URL, timeout=300, stream=True)
+    url = _epss_url()
+    logger.info(f"Downloading EPSS scores from {url}")
+    headers = {"User-Agent": "Mozilla/5.0"}
+    resp = requests.get(url, timeout=300, stream=True, headers=headers)
     resp.raise_for_status()
 
     # Stream download to avoid OOM on large file (~10 MB compressed)
