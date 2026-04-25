@@ -30,7 +30,18 @@ dist/
 # Reports and data
 reports/
 server/data/
+.data/
+*.db
+*.sqlite
+*.sqlite3
 
-# Docker
+# Logs and temporary files
 *.log
+*.log.*
+.cache/
+cache/
+
+# OS files
+.DS_Store
+Thumbs.db
 

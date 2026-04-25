@@ -1,0 +1,5 @@
+[
+  {"host": "10.0.0.5", "criticality": "critical", "internet_facing": true},
+  {"host": "10.0.0.12", "criticality": "high", "internet_facing": false},
+  {"host": "10.0.0.20", "criticality": "normal", "internet_facing": false}
+]

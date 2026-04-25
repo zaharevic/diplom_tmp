@@ -1,0 +1,5 @@
+{
+  "10.0.0.5": ["nginx", "openssl"],
+  "10.0.0.12": ["postgres", "python"],
+  "10.0.0.20": ["docker", "rpm"]
+}
