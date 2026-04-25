@@ -266,6 +266,29 @@ def normalize_for_nvd(name: str) -> str:
     return name if name else "unknown"
 
 
+def extract_cpe_matches(node: dict):
+    """Рекурсивно извлекает CPE-записи с версионными диапазонами из узла конфигурации NVD.
+
+    Каждый элемент — словарь с ключами:
+      cpe23, vulnerable, version_start_including, version_start_excluding,
+      version_end_including, version_end_excluding
+    """
+    for cm in (node.get('cpeMatch') or []):
+        cpe23 = cm.get('cpe23Uri') or cm.get('criteria')
+        if not cpe23:
+            continue
+        yield {
+            'cpe23':                    cpe23,
+            'vulnerable':               1 if cm.get('vulnerable', True) else 0,
+            'version_start_including':  cm.get('versionStartIncluding'),
+            'version_start_excluding':  cm.get('versionStartExcluding'),
+            'version_end_including':    cm.get('versionEndIncluding'),
+            'version_end_excluding':    cm.get('versionEndExcluding'),
+        }
+    for child in (node.get('children') or []):
+        yield from extract_cpe_matches(child)
+
+
 def init_local_nvd_db(db_path: str = LOCAL_NVD_DB):
     """Initialize minimal local NVD schema (cve + cpe_match)."""
     conn = sqlite3.connect(db_path)
@@ -284,11 +307,30 @@ def init_local_nvd_db(db_path: str = LOCAL_NVD_DB):
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             cve_id TEXT,
             cpe23 TEXT,
+            vulnerable INTEGER DEFAULT 1,
+            version_start_including TEXT,
+            version_start_excluding TEXT,
+            version_end_including   TEXT,
+            version_end_excluding   TEXT,
             FOREIGN KEY(cve_id) REFERENCES cve(id)
         )
     """)
     c.execute("CREATE INDEX IF NOT EXISTS idx_cpe_cve ON cpe_match(cpe23)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_cve_pub ON cve(publishedDate)")
+
+    # Migration: add new columns to existing databases that predate this schema
+    for col, typedef in [
+        ("vulnerable",              "INTEGER DEFAULT 1"),
+        ("version_start_including", "TEXT"),
+        ("version_start_excluding", "TEXT"),
+        ("version_end_including",   "TEXT"),
+        ("version_end_excluding",   "TEXT"),
+    ]:
+        try:
+            c.execute(f"ALTER TABLE cpe_match ADD COLUMN {col} {typedef}")
+        except Exception:
+            pass  # column already exists
+
     conn.commit()
     conn.close()
 

@@ -14,7 +14,7 @@ import os
 
 # Ensure project root is on sys.path so `from server import ...` works
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from server.nvd import init_local_nvd_db
+from server.nvd import init_local_nvd_db, extract_cpe_matches
 
 
 def download_and_decompress(url: str) -> bytes:
@@ -65,17 +65,7 @@ def apply_modified_bytes(bts: bytes, db_path: str):
         cur.execute("INSERT OR REPLACE INTO cve(id, publishedDate, lastModifiedDate, cvss_score, description) VALUES(?,?,?,?,?)",
                     (cve_id, None, None, cvss, desc))
 
-        # Replace CPEs by inserting any new ones (handle nested nodes/children)
-        def extract_cpes_from_node(node):
-            for cm in node.get('cpeMatch', []) if isinstance(node.get('cpeMatch', []), list) else []:
-                cpe23 = cm.get('cpe23Uri') or cm.get('criteria')
-                if cpe23:
-                    yield cpe23
-            for child in node.get('children', []) if isinstance(node.get('children', []), list) else []:
-                for cpe in extract_cpes_from_node(child):
-                    yield cpe
-
-        configurations = cve_obj.get('configurations') or cve_obj.get('configurations', {})
+        configurations = cve_obj.get('configurations') or {}
         nodes = []
         if isinstance(configurations, dict):
             nodes = configurations.get('nodes', [])
@@ -83,10 +73,30 @@ def apply_modified_bytes(bts: bytes, db_path: str):
             nodes = configurations
 
         for node in nodes:
-            for cpe23 in extract_cpes_from_node(node):
-                cur.execute("SELECT 1 FROM cpe_match WHERE cve_id = ? AND cpe23 = ? LIMIT 1", (cve_id, cpe23))
+            for match in extract_cpe_matches(node):
+                cur.execute(
+                    "SELECT 1 FROM cpe_match WHERE cve_id = ? AND cpe23 = ? LIMIT 1",
+                    (cve_id, match['cpe23']),
+                )
                 if not cur.fetchone():
-                    cur.execute("INSERT INTO cpe_match(cve_id, cpe23) VALUES(?,?)", (cve_id, cpe23))
+                    cur.execute(
+                        """
+                        INSERT INTO cpe_match(
+                            cve_id, cpe23, vulnerable,
+                            version_start_including, version_start_excluding,
+                            version_end_including,   version_end_excluding
+                        ) VALUES (?,?,?,?,?,?,?)
+                        """,
+                        (
+                            cve_id,
+                            match['cpe23'],
+                            match['vulnerable'],
+                            match['version_start_including'],
+                            match['version_start_excluding'],
+                            match['version_end_including'],
+                            match['version_end_excluding'],
+                        ),
+                    )
 
     conn.commit()
     conn.close()
