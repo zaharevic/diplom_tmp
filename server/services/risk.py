@@ -28,14 +28,8 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-EPSS_BASE_URL = "https://epss.empiricalsecurity.com"
-KEV_URL       = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
-
-
-def _epss_url() -> str:
-    """Return dated EPSS URL for today (server gives relative redirect from -current)."""
-    today = datetime.now().strftime("%Y-%m-%d")
-    return f"{EPSS_BASE_URL}/epss_scores-{today}.csv.gz"
+EPSS_API_URL = "https://api.first.org/data/v1/epss"
+KEV_URL      = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
 
 
 def compute_risk(
@@ -56,61 +50,89 @@ def compute_risk(
 # EPSS import
 # ---------------------------------------------------------------------------
 
-def import_epss(db_path: str) -> int:
-    """Download current EPSS scores and upsert into vuln_risk table.
+def import_epss(db_path: str, batch_size: int = 100) -> int:
+    """Fetch EPSS scores from FIRST.org API only for CVEs present in our DB.
 
+    Uses targeted API calls instead of downloading the full ~10 MB CSV.
     Returns number of rows upserted.
     """
     if not _has_requests:
         raise RuntimeError("requests library not available")
 
-    url = _epss_url()
-    logger.info(f"Downloading EPSS scores from {url}")
-    headers = {"User-Agent": "Mozilla/5.0"}
-    resp = requests.get(url, timeout=300, stream=True, headers=headers)
-    resp.raise_for_status()
+    # Collect all CVE IDs we have locally (from vuln_risk + nvd_local)
+    cve_ids = _collect_local_cve_ids(db_path)
+    if not cve_ids:
+        logger.warning("No CVE IDs found in local DB — nothing to fetch EPSS for")
+        return 0
 
-    # Stream download to avoid OOM on large file (~10 MB compressed)
-    raw_bytes = b""
-    for chunk in resp.iter_content(chunk_size=65536):
-        raw_bytes += chunk
-    logger.info(f"EPSS download complete: {len(raw_bytes) // 1024} KB")
+    logger.info(f"Fetching EPSS scores for {len(cve_ids)} CVEs via FIRST.org API")
 
     rows_done = 0
     conn = sqlite3.connect(db_path)
     try:
-        # CSV inside gzip; first line is a comment (#model_version,...), second is header
-        content = gzip.decompress(raw_bytes).decode("utf-8")
-        reader  = csv.reader(io.StringIO(content))
-
-        batch = []
-        for line in reader:
-            # skip comment/header lines
-            if not line or line[0].startswith("#") or line[0].lower() == "cve":
-                continue
-            cve_id    = line[0].strip().upper()
+        for i in range(0, len(cve_ids), batch_size):
+            chunk = cve_ids[i : i + batch_size]
+            cve_param = ",".join(chunk)
             try:
-                epss_val  = float(line[1])
-            except (IndexError, ValueError):
+                resp = requests.get(
+                    EPSS_API_URL,
+                    params={"cve": cve_param},
+                    timeout=30,
+                    headers={"User-Agent": "vuln-scanner/1.0"},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+            except Exception as e:
+                logger.warning(f"EPSS API batch {i//batch_size} failed: {e}")
                 continue
 
-            batch.append((cve_id, epss_val))
+            batch = []
+            for entry in data.get("data", []):
+                cve_id   = entry.get("cve", "").upper()
+                epss_val = entry.get("epss")
+                if cve_id and epss_val is not None:
+                    batch.append((cve_id, float(epss_val)))
 
-            if len(batch) >= 5000:
+            if batch:
                 _upsert_epss_batch(conn, batch)
                 rows_done += len(batch)
-                batch = []
 
-        if batch:
-            _upsert_epss_batch(conn, batch)
-            rows_done += len(batch)
+            # small delay to be polite to the API
+            time.sleep(0.5)
 
         conn.commit()
-        logger.info(f"EPSS import done: {rows_done} rows upserted into {db_path}")
+        logger.info(f"EPSS import done: {rows_done} scores upserted from {len(cve_ids)} CVEs")
     finally:
         conn.close()
 
     return rows_done
+
+
+def _collect_local_cve_ids(db_path: str) -> list[str]:
+    """Return all CVE IDs from vuln_risk + nvd_local DB."""
+    ids: set[str] = set()
+
+    # from vuln_risk (already tracked)
+    try:
+        conn = sqlite3.connect(db_path)
+        for r in conn.execute("SELECT cve_id FROM vuln_risk"):
+            ids.add(r[0].upper())
+        conn.close()
+    except Exception:
+        pass
+
+    # from nvd_local DB
+    nvd_db = _find_nvd_db()
+    if nvd_db:
+        try:
+            conn = sqlite3.connect(nvd_db)
+            for r in conn.execute("SELECT id FROM cve"):
+                ids.add(r[0].upper())
+            conn.close()
+        except Exception:
+            pass
+
+    return sorted(ids)
 
 
 def _upsert_epss_batch(conn: sqlite3.Connection, batch: list):
