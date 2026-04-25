@@ -11,7 +11,6 @@ from datetime import datetime, timezone
 import socket
 import threading
 import subprocess
-import calendar
 
 # Configure logging
 logging.basicConfig(
@@ -27,7 +26,6 @@ from nvd import (
     print_nvd_log_summary,
     normalize_for_nvd,
     init_local_nvd_db,
-    local_find_cves_for_cpe,
     get_cpe_keywords,
 )
 from auth import create_session, is_session_valid, invalidate_session, verify_password
@@ -38,6 +36,7 @@ from pages import (
 from core.database import get_db, init_db, DB_PATH
 from core.utils import find_script
 from services.matcher import match_package_to_cves
+from services.risk import import_epss, import_kev, recompute_base_risk, compute_risk
 
 # Check for -nvd-log flag
 NVD_LOG = "-nvd-log" in sys.argv or os.environ.get("NVD_LOG") == "true"
@@ -310,28 +309,27 @@ async def trigger_vuln_risk_update(background: bool = True):
                 with vuln_risk_status_lock:
                     vuln_risk_status['running'] = True
                     vuln_risk_status['start_time'] = datetime.now().isoformat()
-                    vuln_risk_status['last_message'] = 'Starting vuln_risk update'
+                    vuln_risk_status['last_message'] = 'Importing EPSS scores'
                     vuln_risk_status['finished'] = False
                     vuln_risk_status['error'] = None
 
-                script = find_script('import_epss_kev.py')
-                if not script:
-                    with vuln_risk_status_lock:
-                        vuln_risk_status['error'] = 'import_epss_kev.py not found'
-                        vuln_risk_status['last_message'] = 'Script not found'
-                        vuln_risk_status['running'] = False
-                        vuln_risk_status['finished'] = True
-                    return
+                epss_count = import_epss(DB_PATH)
 
                 with vuln_risk_status_lock:
-                    vuln_risk_status['last_message'] = f'Running {script}'
+                    vuln_risk_status['last_message'] = f'EPSS done ({epss_count} rows), importing KEV'
 
-                subprocess.run([sys.executable, script, '--db', DB_PATH], check=False)
+                kev_count = import_kev(DB_PATH)
 
                 with vuln_risk_status_lock:
-                    vuln_risk_status['last_message'] = 'Update completed'
+                    vuln_risk_status['last_message'] = f'KEV done ({kev_count} entries), recomputing risk scores'
+
+                updated = recompute_base_risk(DB_PATH)
+
+                with vuln_risk_status_lock:
+                    vuln_risk_status['last_message'] = f'Done: EPSS={epss_count}, KEV={kev_count}, risk recomputed={updated}'
                     vuln_risk_status['running'] = False
                     vuln_risk_status['finished'] = True
+
             except Exception as e:
                 logger.error(f"vuln_risk update failed: {e}")
                 with vuln_risk_status_lock:
