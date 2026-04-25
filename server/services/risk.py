@@ -28,7 +28,7 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-EPSS_URL = "https://epss.cyentia.com/epss_scores-current.csv.gz"
+EPSS_URL = "https://epss.empiricalsecurity.com/epss_scores-current.csv.gz"
 KEV_URL  = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
 
 
@@ -59,14 +59,20 @@ def import_epss(db_path: str) -> int:
         raise RuntimeError("requests library not available")
 
     logger.info(f"Downloading EPSS scores from {EPSS_URL}")
-    resp = requests.get(EPSS_URL, timeout=120)
+    resp = requests.get(EPSS_URL, timeout=300, stream=True)
     resp.raise_for_status()
+
+    # Stream download to avoid OOM on large file (~10 MB compressed)
+    raw_bytes = b""
+    for chunk in resp.iter_content(chunk_size=65536):
+        raw_bytes += chunk
+    logger.info(f"EPSS download complete: {len(raw_bytes) // 1024} KB")
 
     rows_done = 0
     conn = sqlite3.connect(db_path)
     try:
         # CSV inside gzip; first line is a comment (#model_version,...), second is header
-        content = gzip.decompress(resp.content).decode("utf-8")
+        content = gzip.decompress(raw_bytes).decode("utf-8")
         reader  = csv.reader(io.StringIO(content))
 
         batch = []
