@@ -60,6 +60,152 @@ def wait_for_rate_limit():
     last_nvd_request_time = time.time()
 
 
+def normalize_version(version: str) -> tuple:
+    """
+    Convert version string to tuple of integers for comparison.
+    Examples:
+    - "1.2.3" -> (1, 2, 3)
+    - "10.0" -> (10, 0)
+    - "2024.01.15" -> (2024, 1, 15)
+    - "3.11.0-rc1" -> (3, 11, 0, 0)  # rc1 becomes 0 (pre-release)
+    """
+    if not version:
+        return (0,)
+    
+    # Remove pre-release suffixes (alpha, beta, rc, etc.)
+    version = re.sub(r'-(alpha|beta|rc|a|b|dev)\d*', '', version, flags=re.IGNORECASE)
+    
+    # Extract all numeric sequences
+    numbers = re.findall(r'\d+', version)
+    if not numbers:
+        return (0,)
+    
+    return tuple(int(n) for n in numbers)
+
+
+def version_matches_cpe(installed_version: str, cpe23: str) -> bool:
+    """
+    Check if installed version matches CPE version constraint.
+    
+    CPE23 format: cpe:2.3:a:vendor:product:version:update:...
+    Examples:
+    - cpe:2.3:a:python:python:3.11.0:*:* -> matches 3.11.0
+    - cpe:2.3:a:java:jre:1.8.0:update271:* -> matches 1.8.0 update 271
+    
+    If installed_version is "*" or empty, it matches everything (unknown version).
+    """
+    if not installed_version or installed_version == "*":
+        # Unknown version - show all CVEs for this product
+        return True
+    
+    try:
+        # Parse CPE23 format: cpe:2.3:part:vendor:product:version:update:edition:language:sw_edition:target_sw:target_hw:other
+        parts = cpe23.split(':')
+        if len(parts) < 6:
+            return True  # Malformed CPE, include it to be safe
+        
+        cpe_version = parts[5]  # version field
+        cpe_update = parts[6] if len(parts) > 6 else "*"  # update field
+        
+        # If CPE version is wildcard, it applies to all versions of this product
+        if cpe_version == "*":
+            return True
+        
+        # Normalize both versions for comparison
+        installed_norm = normalize_version(installed_version)
+        cpe_norm = normalize_version(cpe_version)
+        
+        # If versions don't have enough components, pad with zeros
+        max_len = max(len(installed_norm), len(cpe_norm))
+        installed_norm = installed_norm + (0,) * (max_len - len(installed_norm))
+        cpe_norm = cpe_norm + (0,) * (max_len - len(cpe_norm))
+        
+        # Exact version match
+        if installed_norm == cpe_norm:
+            return True
+        
+        # Handle update/patch levels: if installed >= CPE version, it may still be affected
+        # (Conservative: include CVEs for earlier versions)
+        if installed_norm >= cpe_norm:
+            # For patch versions, only include if close match
+            # E.g., if CPE is 3.11.0 and installed is 3.11.5, include it
+            # But if CPE is 3.11.0 and installed is 4.0.0, may or may not include
+            major_cpe = cpe_norm[0] if cpe_norm else 0
+            major_inst = installed_norm[0] if installed_norm else 0
+            
+            if major_cpe == major_inst:
+                # Same major version - likely same product line
+                return True
+        
+        return False
+    
+    except Exception as e:
+        logger.warning(f"Error matching version {installed_version} against CPE {cpe23}: {e}")
+        return True  # Include on error to be safe
+
+
+def local_find_cves_for_cpe_with_version(db_path: str, cpe_pattern: str, installed_version: str = None) -> List[Dict]:
+    """
+    Find CVEs by CPE pattern and filter by installed version.
+    
+    Returns only CVEs where the CPE version matches or is <= the installed version.
+    This prevents showing CVEs for newer versions of the software.
+    """
+    results = []
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    
+    # Try exact match first, then LIKE - include cpe23 for version checking
+    params = (cpe_pattern,)
+    c.execute("""
+        SELECT DISTINCT cve.id, cve.description, cve.cvss_score, cpe_match.cpe23 
+        FROM cve JOIN cpe_match ON cve.id = cpe_match.cve_id 
+        WHERE cpe_match.cpe23 = ?
+    """, params)
+    rows = c.fetchall()
+    
+    if not rows:
+        like_pattern = f"%{cpe_pattern}%"
+        c.execute("""
+            SELECT DISTINCT cve.id, cve.description, cve.cvss_score, cpe_match.cpe23 
+            FROM cve JOIN cpe_match ON cve.id = cpe_match.cve_id 
+            WHERE cpe_match.cpe23 LIKE ?
+        """, (like_pattern,))
+        rows = c.fetchall()
+    
+    # If still no rows, fall back to description search (no version info available)
+    if not rows:
+        try:
+            like_pattern = f"%{cpe_pattern}%"
+            c.execute("SELECT id, description, cvss_score FROM cve WHERE description LIKE ? COLLATE NOCASE", (like_pattern,))
+            rows = c.fetchall()
+        except Exception:
+            rows = []
+    
+    # Filter by version if provided
+    for r in rows:
+        # Get CPE string to check version compatibility
+        cpe_str = r.get('cpe23') if r.get('cpe23') else cpe_pattern
+        
+        # If installed_version provided, check if this CVE applies to it
+        if installed_version and not version_matches_cpe(installed_version, cpe_str):
+            continue  # Skip this CVE - it's for a different version
+        
+        results.append({
+            "id": r["id"],
+            "description": r["description"],
+            "cvss": r["cvss_score"],
+        })
+    
+    conn.close()
+    
+    if VERBOSE_NVD and installed_version:
+        logger.info(f"Found {len(results)} version-filtered CVEs for '{cpe_pattern}' v{installed_version}")
+    
+    return results
+
+
 def normalize_for_nvd(name: str) -> str:
     """
     Normalize package name for NVD API queries.
@@ -364,8 +510,11 @@ class NVDClient:
     
     def check_package(self, package_name: str, version: str = None) -> Dict:
         """
-        Check package for CVEs.
-        Uses cache if available and <24h old, otherwise queries NVD API.
+        Check package for CVEs with version filtering.
+        Uses cache if available and <24h old, otherwise queries local NVD DB.
+        
+        Filters CVEs to show only those affecting the specified version (or earlier).
+        This prevents showing CVEs for newer versions of the software.
         
         Returns: {
             "package": package_name,
@@ -398,19 +547,20 @@ class NVDClient:
                 "vulnerable": cached_result["cves_found"] > 0,
             }
         
-        # Local-only lookup (no runtime queries to NVD API)
+        # Local-only lookup with version filtering (no runtime queries to NVD API)
         try:
             # Derive likely CPE pattern from package name
             norm = normalize_for_nvd(package_name)
             cves = []
             if USE_LOCAL_NVD or os.path.exists(LOCAL_NVD_DB):
                 # Try exact normalized name, then first token
+                # Pass version for filtering
                 if norm:
-                    cves = local_find_cves_for_cpe(LOCAL_NVD_DB, norm)
+                    cves = local_find_cves_for_cpe_with_version(LOCAL_NVD_DB, norm, version)
                 if not cves:
                     first = norm.split()[0] if norm else ''
                     if first:
-                        cves = local_find_cves_for_cpe(LOCAL_NVD_DB, first)
+                        cves = local_find_cves_for_cpe_with_version(LOCAL_NVD_DB, first, version)
 
             # Normalize into expected structure
             normalized_cves = [
@@ -422,6 +572,10 @@ class NVDClient:
             self.cache.cache_result(package_name, version or "", normalized_cves)
             nvd_stats["total_cves_found"] += len(normalized_cves)
             cvss_max = max([cve.get("cvss", 0) for cve in normalized_cves], default=0)
+            
+            if version and VERBOSE_NVD:
+                logger.info(f"Package: {package_name} v{version} -> {len(normalized_cves)} CVEs (after version filtering)")
+            
             return {
                 "package": package_name,
                 "version": version,
