@@ -8,7 +8,6 @@ import logging
 import time
 import sys
 from datetime import datetime, timezone
-from contextlib import contextmanager
 import socket
 import threading
 import subprocess
@@ -33,9 +32,11 @@ from nvd import (
 )
 from auth import create_session, is_session_valid, invalidate_session, verify_password
 from pages import (
-    get_login_page, get_dashboard_page, get_hosts_page, 
+    get_login_page, get_dashboard_page, get_hosts_page,
     get_packages_page, get_software_management_page
 )
+from core.database import get_db, init_db, DB_PATH
+from core.utils import find_script
 
 # Check for -nvd-log flag
 NVD_LOG = "-nvd-log" in sys.argv or os.environ.get("NVD_LOG") == "true"
@@ -91,10 +92,6 @@ async def auth_middleware(request: Request, call_next):
 
 DATA_DIR = os.environ.get("DATA_DIR", "/data/reports")
 os.makedirs(DATA_DIR, exist_ok=True)
-
-# SQLite database for storing reports and packages
-DB_PATH = os.environ.get("DB_PATH", "/data/reports/vuln_collector.db")
-os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
 # Optional API key enforcement
 API_KEY = os.environ.get("API_KEY")
@@ -181,22 +178,6 @@ def ensure_nvd_populated():
                         import_status['error'] = None
                 except Exception:
                     pass
-
-                # helper to find script path in several likely locations
-                def find_script(script_name: str):
-                    candidates = []
-                    base1 = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                    candidates.append(os.path.join(base1, 'scripts', script_name))
-                    candidates.append(os.path.join(os.getcwd(), 'scripts', script_name))
-                    candidates.append(os.path.join('/app', 'scripts', script_name))
-                    candidates.append(os.path.join(base1, script_name))
-                    for p in candidates:
-                        try:
-                            if os.path.exists(p):
-                                return p
-                        except Exception:
-                            continue
-                    return None
 
                 # Prefer running the provided batch import script if present (simpler and tested)
                 batch_script = find_script('import_all_nvd_years.sh') or find_script('Import-All-NVD-Years.ps1')
@@ -331,23 +312,6 @@ async def trigger_vuln_risk_update(background: bool = True):
                     vuln_risk_status['last_message'] = 'Starting vuln_risk update'
                     vuln_risk_status['finished'] = False
                     vuln_risk_status['error'] = None
-
-                # find script in candidate locations
-                def find_script(name):
-                    base1 = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                    candidates = [
-                        os.path.join(base1, 'scripts', name),
-                        os.path.join(os.getcwd(), 'scripts', name),
-                        os.path.join('/app', 'scripts', name),
-                        os.path.join(base1, name),
-                    ]
-                    for p in candidates:
-                        try:
-                            if os.path.exists(p):
-                                return p
-                        except Exception:
-                            continue
-                    return None
 
                 script = find_script('import_epss_kev.py')
                 if not script:
@@ -494,141 +458,6 @@ async def software_management_page():
     """Render software management page."""
     return get_software_management_page()
 
-
-
-def init_db():
-    """Initialize database schema."""
-    with get_db() as conn:
-        c = conn.cursor()
-        # Table for reports (raw JSON)
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS reports (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                hostname TEXT NOT NULL,
-                ip TEXT,
-                os TEXT,
-                collected_at TEXT,
-                received_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                raw_json TEXT NOT NULL
-            )
-        """)
-        # Table for software (packages) from reports
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS software (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                report_id INTEGER NOT NULL,
-                hostname TEXT NOT NULL,
-                name TEXT NOT NULL,
-                version TEXT,
-                FOREIGN KEY (report_id) REFERENCES reports(id) ON DELETE CASCADE
-            )
-        """)
-        c.execute("CREATE INDEX IF NOT EXISTS idx_software_hostname ON software(hostname)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_software_name ON software(name)")
-        
-        # Table for software management (status, normalized names for NVD)
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS software_management (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                original_name TEXT NOT NULL UNIQUE,
-                normalized_for_nvd TEXT NOT NULL,
-                status TEXT DEFAULT 'new',
-                comment TEXT,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        # Add EPSS / KEV columns if missing (migration-friendly)
-        try:
-            c.execute("ALTER TABLE software_management ADD COLUMN ep_ss REAL DEFAULT 0")
-        except Exception:
-            pass
-        try:
-            c.execute("ALTER TABLE software_management ADD COLUMN in_kev INTEGER DEFAULT 0")
-        except Exception:
-            pass
-        try:
-            c.execute("ALTER TABLE software_management ADD COLUMN last_checked TEXT")
-        except Exception:
-            pass
-        c.execute("CREATE INDEX IF NOT EXISTS idx_software_management_status ON software_management(status)")
-        
-        # Fix any existing records with incorrect status (migration)
-        c.execute("UPDATE software_management SET status = 'new' WHERE status IS NULL OR status = ''")
-        c.execute("UPDATE software_management SET status = 'new' WHERE status NOT IN ('new', 'in_task', 'ignore')")
-        
-        # Table for scan queue tracking
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS scan_queue (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                hostname TEXT NOT NULL,
-                report_id INTEGER,
-                status TEXT DEFAULT 'pending',
-                started_at TEXT,
-                completed_at TEXT,
-                total_packages INTEGER DEFAULT 0,
-                checked_packages INTEGER DEFAULT 0,
-                vulnerable_count INTEGER DEFAULT 0,
-                error_message TEXT,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (report_id) REFERENCES reports(id) ON DELETE SET NULL
-            )
-        """)
-        c.execute("CREATE INDEX IF NOT EXISTS idx_scan_queue_hostname ON scan_queue(hostname)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_scan_queue_status ON scan_queue(status)")
-        # Add 'family' column to software for aggregated families (added via migration if missing)
-        try:
-            c.execute("ALTER TABLE software ADD COLUMN family TEXT DEFAULT ''")
-        except Exception:
-            # Column may already exist on subsequent runs
-            pass
-        c.execute("CREATE INDEX IF NOT EXISTS idx_software_family ON software(family)")
-        
-        # Ensure vuln_risk and vuln_risk_host tables exist (idempotent)
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS vuln_risk (
-                cve_id TEXT PRIMARY KEY,
-                ep_ss REAL DEFAULT 0,
-                in_kev INTEGER DEFAULT 0,
-                base_risk REAL DEFAULT 0,
-                computed_at TEXT
-            )
-        """)
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS vuln_risk_host (
-                host TEXT,
-                cve_id TEXT,
-                risk_score REAL DEFAULT 0,
-                computed_at TEXT,
-                PRIMARY KEY (host, cve_id)
-            )
-        """)
-        c.execute("CREATE INDEX IF NOT EXISTS idx_vuln_risk_base_risk ON vuln_risk(base_risk)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_vuln_risk_host_host ON vuln_risk_host(host)")
-
-        # Hosts metadata table for criticality and annotations
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS hosts (
-                host TEXT PRIMARY KEY,
-                criticality INTEGER DEFAULT 1,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        c.execute("CREATE INDEX IF NOT EXISTS idx_hosts_criticality ON hosts(criticality)")
-
-        conn.commit()
-
-
-@contextmanager
-def get_db():
-    """Context manager for database connections."""
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    try:
-        yield conn
-    finally:
-        conn.close()
 
 
 def normalize_package_name(name: str) -> str:
@@ -1410,67 +1239,38 @@ async def get_software_management():
     """Get all unique software with their management status and normalized NVD names."""
     with get_db() as conn:
         c = conn.cursor()
-        
-        # Get all unique software names from reports
         c.execute("""
-            SELECT DISTINCT name FROM software ORDER BY name
+            SELECT
+                s.name                                      AS original_name,
+                COALESCE(m.normalized_for_nvd, s.name)     AS normalized_for_nvd,
+                COALESCE(m.status, 'new')                   AS status,
+                m.comment,
+                COALESCE(m.ep_ss, 0.0)                      AS ep_ss,
+                COALESCE(m.in_kev, 0)                       AS in_kev,
+                m.last_checked
+            FROM (SELECT DISTINCT name FROM software) s
+            LEFT JOIN software_management m ON m.original_name = s.name
+            ORDER BY s.name
         """)
-        packages = [row[0] for row in c.fetchall()]
-        
-        result = []
-        for pkg_name in packages:
-            # Check if this package has management settings
-            c.execute("""
-                SELECT normalized_for_nvd, status, comment FROM software_management 
-                WHERE original_name = ?
-            """, (pkg_name,))
-            mgmt_row = c.fetchone()
-            
-            # Get cached CVE status
-            cached = nvd_client.cache.get_cached_result(pkg_name)
-            
-            if mgmt_row:
-                normalized = mgmt_row[0]
-                status = mgmt_row[1]
-                comment = mgmt_row[2]
-                # Try to read EPSS/KEV fields if present
-                try:
-                    c.execute("SELECT ep_ss, in_kev, last_checked FROM software_management WHERE original_name = ?", (pkg_name,))
-                    extra = c.fetchone()
-                    if extra:
-                        ep_ss_val = extra[0]
-                        in_kev_val = bool(extra[1])
-                        last_checked = extra[2]
-                    else:
-                        ep_ss_val = 0.0
-                        in_kev_val = False
-                        last_checked = None
-                except Exception:
-                    ep_ss_val = 0.0
-                    in_kev_val = False
-                    last_checked = None
-            else:
-                normalized = normalize_for_nvd(pkg_name)
-                status = "new"
-                comment = None
-                ep_ss_val = 0.0
-                in_kev_val = False
-                last_checked = None
-            
-            cves_found = cached.get("cves_found", 0) if cached else 0
-            
-            result.append({
-                "original_name": pkg_name,
-                "normalized_for_nvd": normalized,
-                "status": status,
-                "comment": comment,
-                "cves_found": cves_found,
-                "cached": cached is not None,
-                "ep_ss": ep_ss_val,
-                "in_kev": in_kev_val,
-                "last_checked": last_checked,
-            })
-    
+        rows = c.fetchall()
+
+    result = []
+    for row in rows:
+        pkg_name = row["original_name"]
+        cached = nvd_client.cache.get_cached_result(pkg_name)
+        normalized = row["normalized_for_nvd"] if row["normalized_for_nvd"] != pkg_name else normalize_for_nvd(pkg_name)
+        result.append({
+            "original_name": pkg_name,
+            "normalized_for_nvd": normalized,
+            "status": row["status"],
+            "comment": row["comment"],
+            "cves_found": cached.get("cves_found", 0) if cached else 0,
+            "cached": cached is not None,
+            "ep_ss": row["ep_ss"] or 0.0,
+            "in_kev": bool(row["in_kev"]),
+            "last_checked": row["last_checked"],
+        })
+
     logger.debug(f"Retrieved {len(result)} software packages for management")
     return JSONResponse(result)
 
