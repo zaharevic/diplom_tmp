@@ -13,6 +13,7 @@ Result is normalized to 0-100.
 import logging
 import sqlite3
 import csv
+import time
 import gzip
 import json
 import os
