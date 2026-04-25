@@ -37,6 +37,7 @@ from pages import (
 )
 from core.database import get_db, init_db, DB_PATH
 from core.utils import find_script
+from services.matcher import match_package_to_cves
 
 # Check for -nvd-log flag
 NVD_LOG = "-nvd-log" in sys.argv or os.environ.get("NVD_LOG") == "true"
@@ -896,13 +897,9 @@ async def scan_host(hostname: str):
 
 @app.post("/api/scan-packages")
 async def scan_packages(request: Request):
-    """
-    Scan selected packages for a host. Expects JSON:
-    {
-      "hostname": "DESKTOP-...",
-      "packages": [ {"name": "pkg1", "version": "1.2"}, {"name": "pkg2"} ]
-    }
-    Returns CVE results for selected packages.
+    """Scan selected packages for a host against local NVD DB with version range matching.
+
+    Expects JSON: {"hostname": "...", "packages": [{"name": "...", "version": "..."}]}
     """
     try:
         payload = await request.json()
@@ -914,135 +911,144 @@ async def scan_packages(request: Request):
     if not hostname or not packages or not isinstance(packages, list):
         raise HTTPException(status_code=400, detail="hostname and packages[] required")
 
-    logger.info(f"Selected scan requested for host={hostname}, packages={len(packages)}")
+    nvd_db = find_local_nvd_db()
+    if not nvd_db:
+        raise HTTPException(status_code=500, detail="Local NVD DB not found")
+
+    logger.info(f"Scan requested: host={hostname}, packages={len(packages)}")
+
+    # Get host criticality once
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT criticality FROM hosts WHERE host = ? LIMIT 1", (hostname,)
+        ).fetchone()
+        host_crit = row[0] if row and row[0] else 1
 
     vulnerable = []
     checked = 0
 
     for pkg in packages:
         name = pkg.get("name")
-        version = pkg.get("version") if pkg.get("version") else None
+        version = pkg.get("version") or None
         if not name:
             continue
         checked += 1
-        # Try original name first, then family, then normalized fallback
-        result = nvd_client.check_package(name, version)
-        if not result.get("vulnerable"):
-            # lookup family from DB
-            with get_db() as conn:
-                c = conn.cursor()
-                c.execute("SELECT family FROM software WHERE hostname = ? AND name = ? LIMIT 1", (hostname, name))
-                row = c.fetchone()
-                family = row[0] if row and row[0] else None
-            if family:
-                result = nvd_client.check_package(family, version)
-        if not result.get("vulnerable"):
-            # final fallback: check normalized name
+
+        # Primary match: original name + version with range checking
+        cves = match_package_to_cves(name, version, nvd_db)
+
+        # Fallback: try NVD-normalized name if no results
+        if not cves:
             norm = normalize_for_nvd(name)
             if norm and norm != name:
-                result = nvd_client.check_package(norm, version)
+                cves = match_package_to_cves(norm, version, nvd_db)
 
-        if result["vulnerable"]:
-            # enrich CVE list with EPSS and KEV info from vuln_risk table
-            enriched_cves = []
-            ep_ss_max = 0.0
-            kev_present = False
-            with get_db() as conn:
-                c = conn.cursor()
-                # get host criticality (default 1)
-                c.execute("SELECT criticality FROM hosts WHERE host = ? LIMIT 1", (hostname,))
-                row = c.fetchone()
-                host_crit = row[0] if row and row[0] else 1
+        if not cves:
+            continue
 
-                for cve in result.get("cves", [])[:100]:
-                    # cve may be dict or string depending on nvd_client implementation
-                    cve_id = cve if isinstance(cve, str) else cve.get("cve_id") or cve.get("id") or cve.get("CVE")
-                    if not cve_id:
-                        continue
-                    cve_id = cve_id.strip().upper()
-                    c.execute("SELECT ep_ss, in_kev, base_risk FROM vuln_risk WHERE cve_id = ?", (cve_id,))
-                    vr = c.fetchone()
-                    if vr:
-                        epss_val = vr[0] or 0.0
-                        in_kev = bool(vr[1])
-                        base = vr[2] or (epss_val * (2.0 if in_kev else 1.0))
-                    else:
-                        # fallback if vuln_risk missing
-                        epss_val = 0.0
-                        in_kev = False
-                        base = 0.0
+        cvss_max = max((c.get("cvss_score") or 0.0 for c in cves), default=0.0)
 
-                    # compute host-specific risk score and upsert into vuln_risk_host
-                    risk_score = float(base) * float(host_crit)
-                    now = datetime.now().isoformat()
-                    try:
-                        c.execute(
-                            """
-                            INSERT INTO vuln_risk_host (host, cve_id, risk_score, computed_at)
-                            VALUES (?, ?, ?, ?)
-                            ON CONFLICT(host, cve_id) DO UPDATE SET
-                                risk_score = excluded.risk_score,
-                                computed_at = excluded.computed_at
-                            """,
-                            (hostname, cve_id, risk_score, now),
-                        )
-                    except Exception:
-                        # ensure table exists otherwise skip
-                        pass
+        # Batch-fetch EPSS/KEV for all found CVE IDs (one query instead of N)
+        cve_ids = [c["cve_id"] for c in cves[:100]]
+        placeholders = ",".join("?" for _ in cve_ids)
+        with get_db() as conn:
+            risk_rows = conn.execute(
+                f"SELECT cve_id, ep_ss, in_kev, base_risk FROM vuln_risk WHERE cve_id IN ({placeholders})",
+                cve_ids,
+            ).fetchall()
+        risk_map = {r[0]: r for r in risk_rows}
 
-                    enriched_cves.append({"cve_id": cve_id, "ep_ss": epss_val, "in_kev": in_kev, "base_risk": base})
-                    if epss_val and epss_val > ep_ss_max:
-                        ep_ss_max = epss_val
-                    if in_kev:
-                        kev_present = True
+        enriched_cves = []
+        ep_ss_max = 0.0
+        kev_present = False
+        now = datetime.now().isoformat()
 
+        with get_db() as conn:
+            for cve in cves[:100]:
+                cve_id = cve["cve_id"]
+                vr = risk_map.get(cve_id)
+                if vr:
+                    epss_val = vr[1] or 0.0
+                    in_kev   = bool(vr[2])
+                    base     = vr[3] or (epss_val * (2.0 if in_kev else 1.0))
+                else:
+                    epss_val = 0.0
+                    in_kev   = False
+                    base     = 0.0
+
+                risk_score = float(base) * float(host_crit)
                 try:
-                    conn.commit()
+                    conn.execute(
+                        """
+                        INSERT INTO vuln_risk_host (host, cve_id, risk_score, computed_at)
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT(host, cve_id) DO UPDATE SET
+                            risk_score  = excluded.risk_score,
+                            computed_at = excluded.computed_at
+                        """,
+                        (hostname, cve_id, risk_score, now),
+                    )
                 except Exception:
                     pass
 
-            vulnerable.append({
-                "name": name,
-                "version": version,
-                "cves_found": result["cves_found"],
-                "cvss_max": result["cvss_max"],
-                "cves": enriched_cves[:10],
-                "ep_ss_max": ep_ss_max,
-                "kev_present": kev_present,
-            })
-            logger.warning(
-                f"Vulnerability found on {hostname}: {name} v{version} ({result['cves_found']} CVEs, CVSS max={result['cvss_max']})"
-            )
-            # Upsert EPSS/KEV summary into software_management for this package
-            try:
-                with get_db() as conn2:
-                    c2 = conn2.cursor()
-                    norm = normalize_for_nvd(name) or name
-                    c2.execute(
-                        """
-                        INSERT INTO software_management (original_name, normalized_for_nvd, status, comment, ep_ss, in_kev, last_checked)
-                        VALUES (?, ?, 'new', '', ?, ?, CURRENT_TIMESTAMP)
-                        ON CONFLICT(original_name) DO UPDATE SET
-                            ep_ss = excluded.ep_ss,
-                            in_kev = excluded.in_kev,
-                            last_checked = excluded.last_checked,
-                            updated_at = CURRENT_TIMESTAMP
-                        """,
-                        (name, norm, ep_ss_max, 1 if kev_present else 0),
-                    )
-                    conn2.commit()
-            except Exception as e:
-                logger.debug(f"Failed to upsert EPSS/KEV into software_management for {name}: {e}")
+                enriched_cves.append({
+                    "cve_id":     cve_id,
+                    "cvss_score": cve.get("cvss_score"),
+                    "confidence": cve.get("confidence"),
+                    "ep_ss":      epss_val,
+                    "in_kev":     in_kev,
+                    "base_risk":  base,
+                })
+                if epss_val > ep_ss_max:
+                    ep_ss_max = epss_val
+                if in_kev:
+                    kev_present = True
 
-    logger.info(f"Selected scan complete for {hostname}: checked={checked}, vulnerable={len(vulnerable)}")
+            conn.commit()
+
+        vulnerable.append({
+            "name":          name,
+            "version":       version,
+            "cves_found":    len(cves),
+            "cvss_max":      cvss_max,
+            "cves":          enriched_cves[:10],
+            "ep_ss_max":     ep_ss_max,
+            "kev_present":   kev_present,
+        })
+        logger.warning(
+            f"Vulnerable: {hostname} / {name} {version} — {len(cves)} CVEs, CVSS max={cvss_max:.1f}"
+        )
+
+        # Update software_management with latest EPSS/KEV summary
+        try:
+            norm = normalize_for_nvd(name) or name
+            with get_db() as conn2:
+                conn2.execute(
+                    """
+                    INSERT INTO software_management
+                        (original_name, normalized_for_nvd, status, comment, ep_ss, in_kev, last_checked)
+                    VALUES (?, ?, 'new', '', ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(original_name) DO UPDATE SET
+                        ep_ss        = excluded.ep_ss,
+                        in_kev       = excluded.in_kev,
+                        last_checked = excluded.last_checked,
+                        updated_at   = CURRENT_TIMESTAMP
+                    """,
+                    (name, norm, ep_ss_max, 1 if kev_present else 0),
+                )
+                conn2.commit()
+        except Exception as e:
+            logger.debug(f"software_management upsert failed for {name}: {e}")
+
+    logger.info(f"Scan complete: host={hostname}, checked={checked}, vulnerable={len(vulnerable)}")
 
     if NVD_LOG:
         print_nvd_log_summary()
 
     return JSONResponse({
-        "hostname": hostname,
-        "checked": checked,
-        "vulnerable_count": len(vulnerable),
+        "hostname":          hostname,
+        "checked":           checked,
+        "vulnerable_count":  len(vulnerable),
         "vulnerable_packages": vulnerable,
     })
 
