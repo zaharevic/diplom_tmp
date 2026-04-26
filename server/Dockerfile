@@ -1,5 +1,5 @@
 FROM python:3.11-slim
-RUN apt-get update && apt-get install -y sqlite3 fonts-dejavu-core && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y sqlite3 && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 # requirements.txt is in the server/ folder (same level as Dockerfile)
 COPY requirements.txt /app/requirements.txt
