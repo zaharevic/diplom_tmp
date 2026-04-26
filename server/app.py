@@ -948,6 +948,10 @@ async def package_cves(package_name: str, version: str = None, limit: int = 200)
                     found_cves[cid]["ep_ss"]  = row[1] or 0.0
                     found_cves[cid]["in_kev"] = bool(row[2])
 
+    # Compute has_exploit per CVE
+    for cid, cve in found_cves.items():
+        cve["has_exploit"] = bool(cve.get("in_kev") or (cve.get("ep_ss") or 0) >= 0.7)
+
     # Mark known false positives
     if found_cves:
         fp_rows = []
@@ -1411,6 +1415,7 @@ async def get_software_management():
             "last_checked":     row["last_checked"],
             "due_date":         due,
             "is_overdue":       bool(due and row["status"] == "in_task" and due < today),
+            "has_exploit":      bool(row["in_kev"] or (row["ep_ss"] or 0) >= 0.7),
         })
 
     logger.debug(f"Retrieved {len(result)} (name, version) entries for software management")
