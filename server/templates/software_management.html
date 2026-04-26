@@ -349,13 +349,23 @@ async function forceCheck(packageName, version) {
     } catch (err) { alert('❌ Ошибка: ' + err.message); }
 }
 
+let _cveModalPkg = null;
+let _cveModalVer = null;
+
 async function viewCVEs(packageName, version) {
+    _cveModalPkg = packageName;
+    _cveModalVer = version || '';
     const modal = document.getElementById('cveModal');
     const body  = document.getElementById('cveModalBody');
-    const title = `CVE для ${packageName}${version ? ' ' + version : ''}`;
-    document.getElementById('cveModalTitle').textContent = title;
+    document.getElementById('cveModalTitle').textContent = `CVE для ${packageName}${version ? ' ' + version : ''}`;
     body.innerHTML = 'Загружение...';
     modal.classList.add('active');
+    await _loadCVEModalBody();
+}
+
+async function _loadCVEModalBody() {
+    const body = document.getElementById('cveModalBody');
+    const packageName = _cveModalPkg, version = _cveModalVer;
     try {
         const url = `/api/package-cves?package_name=${encodeURIComponent(packageName)}`
                   + (version ? `&version=${encodeURIComponent(version)}` : '');
@@ -367,13 +377,27 @@ async function viewCVEs(packageName, version) {
             return;
         }
         const rows = data.cves.map(c => {
-            const epss = c.ep_ss ? Number(c.ep_ss).toFixed(3) : '-';
-            const kev  = c.in_kev ? '<strong style="color:#c62828">ДА</strong>' : 'НЕТ';
-            const conf = c.confidence ? `<span style="color:#999;font-size:11px">(${c.confidence})</span>` : '';
-            return `<tr>
-                <td><a href="https://nvd.nist.gov/vuln/detail/${c.cve_id}" target="_blank">${c.cve_id}</a> ${conf}</td>
-                <td>${c.cvss || '-'}</td><td>${epss}</td><td>${kev}</td>
-                <td style="max-width:420px;font-size:13px">${c.description || '-'}</td>
+            const epss    = c.ep_ss ? Number(c.ep_ss).toFixed(3) : '-';
+            const kev     = c.in_kev ? '<strong style="color:#c62828">ДА</strong>' : 'НЕТ';
+            const conf    = c.confidence ? `<span style="color:#999;font-size:11px">(${c.confidence})</span>` : '';
+            const rowStyle = c.is_fp ? 'background:#f5f5f5;opacity:.6;' : '';
+            const fpBtn   = c.is_fp
+                ? `<button onclick='removeFP(${JSON.stringify(c.cve_id)})'
+                           style="padding:2px 7px;font-size:11px;background:#e8f5e9;color:#2e7d32;
+                                  border:1px solid #a5d6a7;border-radius:3px;cursor:pointer;">
+                       ✓ FP — убрать</button>`
+                : `<button onclick='addFP(${JSON.stringify(c.cve_id)})'
+                           style="padding:2px 7px;font-size:11px;background:white;color:#666;
+                                  border:1px solid #ddd;border-radius:3px;cursor:pointer;">
+                       FP</button>`;
+            return `<tr style="${rowStyle}">
+                <td><a href="https://nvd.nist.gov/vuln/detail/${c.cve_id}" target="_blank">${c.cve_id}</a>
+                    ${c.is_fp ? '<span style="color:#888;font-size:11px"> [FP]</span>' : ''} ${conf}</td>
+                <td style="text-align:center">${c.cvss || '-'}</td>
+                <td style="text-align:center">${epss}</td>
+                <td style="text-align:center">${kev}</td>
+                <td style="max-width:380px;font-size:13px">${c.description || '-'}</td>
+                <td>${fpBtn}</td>
             </tr>`;
         }).join('');
         body.innerHTML = `<div style="overflow:auto;max-height:60vh">
@@ -384,11 +408,34 @@ async function viewCVEs(packageName, version) {
                     <th style="padding:6px">EPSS</th>
                     <th style="padding:6px">KEV</th>
                     <th style="text-align:left;padding:6px">Описание</th>
+                    <th style="padding:6px">FP</th>
                 </tr></thead>
                 <tbody>${rows}</tbody>
             </table></div>`;
     } catch (err) { body.innerHTML = `<div style="color:#d32f2f">Ошибка: ${err.message}</div>`; }
 }
+
+async function addFP(cveId) {
+    const reason = prompt(`Причина False Positive для ${cveId}:`, '') ;
+    if (reason === null) return; // cancelled
+    await fetch('/api/vuln-exceptions', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({cve_id: cveId, original_name: _cveModalPkg,
+                              version: _cveModalVer, reason})
+    });
+    await _loadCVEModalBody();
+}
+
+async function removeFP(cveId) {
+    await fetch('/api/vuln-exceptions', {
+        method: 'DELETE',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({cve_id: cveId, original_name: _cveModalPkg, version: _cveModalVer})
+    });
+    await _loadCVEModalBody();
+}
+
 function closeCVEModal() { document.getElementById('cveModal').classList.remove('active'); }
 
 async function refreshSoftware() { await loadSoftwareData(); renderSoftware(); }

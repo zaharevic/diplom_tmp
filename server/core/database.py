@@ -124,6 +124,19 @@ def _create_tables(c):
     """)
     c.execute("CREATE INDEX IF NOT EXISTS idx_hosts_criticality ON hosts(criticality)")
 
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS vuln_exceptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cve_id TEXT NOT NULL,
+            original_name TEXT NOT NULL,
+            version TEXT NOT NULL DEFAULT '',
+            reason TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(cve_id, original_name, version)
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_vuln_exceptions_pkg ON vuln_exceptions(original_name, version)")
+
 
 def _run_migrations(c):
     """Idempotent ALTER TABLE migrations."""

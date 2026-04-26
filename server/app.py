@@ -948,6 +948,18 @@ async def package_cves(package_name: str, version: str = None, limit: int = 200)
                     found_cves[cid]["ep_ss"]  = row[1] or 0.0
                     found_cves[cid]["in_kev"] = bool(row[2])
 
+    # Mark known false positives
+    if found_cves:
+        fp_rows = []
+        with get_db() as conn:
+            fp_rows = conn.execute(
+                "SELECT cve_id FROM vuln_exceptions WHERE original_name=? AND version=?",
+                (package_name, version or ""),
+            ).fetchall()
+        fp_set = {r[0].upper() for r in fp_rows}
+        for cid in found_cves:
+            found_cves[cid]["is_fp"] = cid in fp_set
+
     return JSONResponse({"package": package_name, "version": version,
                          "cves": list(found_cves.values())})
 
@@ -1723,6 +1735,74 @@ async def export_csv(filter: str = "all"):
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@app.get("/api/vuln-exceptions")
+async def list_vuln_exceptions(original_name: str = None, version: str = None):
+    """List false-positive exceptions, optionally filtered by package."""
+    with get_db() as conn:
+        if original_name is not None:
+            rows = conn.execute(
+                "SELECT cve_id, original_name, version, reason, created_at FROM vuln_exceptions"
+                " WHERE original_name=? AND version=? ORDER BY cve_id",
+                (original_name, version or ""),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT cve_id, original_name, version, reason, created_at FROM vuln_exceptions ORDER BY created_at DESC"
+            ).fetchall()
+    return JSONResponse([dict(r) for r in rows])
+
+
+@app.post("/api/vuln-exceptions")
+async def add_vuln_exception(request: Request):
+    """Mark a CVE as false positive for a given (package, version)."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    cve_id        = (body.get("cve_id") or "").strip().upper()
+    original_name = body.get("original_name", "").strip()
+    version       = body.get("version", "").strip()
+    reason        = body.get("reason", "").strip()
+
+    if not cve_id or not original_name:
+        raise HTTPException(status_code=400, detail="cve_id and original_name required")
+
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO vuln_exceptions (cve_id, original_name, version, reason)"
+            " VALUES (?, ?, ?, ?)"
+            " ON CONFLICT(cve_id, original_name, version) DO UPDATE SET reason=excluded.reason",
+            (cve_id, original_name, version, reason),
+        )
+        conn.commit()
+
+    logger.info(f"FP added: {cve_id} for {original_name} {version}")
+    return JSONResponse({"ok": True, "cve_id": cve_id})
+
+
+@app.delete("/api/vuln-exceptions")
+async def remove_vuln_exception(request: Request):
+    """Remove a false-positive mark."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    cve_id        = (body.get("cve_id") or "").strip().upper()
+    original_name = body.get("original_name", "").strip()
+    version       = body.get("version", "").strip()
+
+    with get_db() as conn:
+        conn.execute(
+            "DELETE FROM vuln_exceptions WHERE cve_id=? AND original_name=? AND version=?",
+            (cve_id, original_name, version),
+        )
+        conn.commit()
+
+    return JSONResponse({"ok": True})
 
 
 @app.get("/api/scan-queue")
