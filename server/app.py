@@ -1832,6 +1832,206 @@ async def get_scan_all_status():
         return JSONResponse(dict(scan_all_state))
 
 
+@app.get("/api/export/pdf")
+async def export_pdf():
+    """Generate a PDF vulnerability report using fpdf2."""
+    try:
+        from fpdf import FPDF
+        from pathlib import Path
+        import fpdf as _fpdf_module
+        _font_path = Path(_fpdf_module.__file__).parent / "fonts" / "DejaVuSansCondensed.ttf"
+        _font_bold  = Path(_fpdf_module.__file__).parent / "fonts" / "DejaVuSansCondensed-Bold.ttf"
+    except ImportError:
+        raise HTTPException(status_code=500, detail="fpdf2 not installed. Run: pip install fpdf2")
+
+    today_str = date.today().isoformat()
+
+    with get_db() as conn:
+        total_pkgs   = conn.execute("SELECT COUNT(DISTINCT name||'|'||COALESCE(version,'')) FROM software").fetchone()[0] or 0
+        vuln_pkgs    = conn.execute("SELECT COUNT(*) FROM software_management WHERE cves_found > 0").fetchone()[0] or 0
+        critical_cnt = conn.execute("SELECT COUNT(*) FROM software_management WHERE cvss_max >= 9").fetchone()[0] or 0
+        high_cnt     = conn.execute("SELECT COUNT(*) FROM software_management WHERE cvss_max >= 7 AND cvss_max < 9").fetchone()[0] or 0
+        in_task_cnt  = conn.execute("SELECT COUNT(*) FROM software_management WHERE status='in_task'").fetchone()[0] or 0
+        overdue_cnt  = conn.execute(
+            "SELECT COUNT(*) FROM software_management WHERE status='in_task' AND due_date < date('now')"
+        ).fetchone()[0] or 0
+        fixed_cnt    = conn.execute("SELECT COUNT(*) FROM software_management WHERE status='fixed'").fetchone()[0] or 0
+        hosts_cnt    = conn.execute("SELECT COUNT(DISTINCT hostname) FROM reports").fetchone()[0] or 0
+
+        pkg_rows = conn.execute("""
+            SELECT original_name, version, cves_found, cvss_max, ep_ss, in_kev,
+                   status, due_date, last_checked
+            FROM software_management
+            WHERE cves_found > 0 AND status != 'ignore'
+            ORDER BY cvss_max DESC, cves_found DESC
+            LIMIT 100
+        """).fetchall()
+
+        top_cves = conn.execute("""
+            SELECT h.cve_id, h.risk_score, vr.ep_ss, vr.in_kev, cve.cvss_score,
+                   substr(cve.description,1,120) AS description
+            FROM vuln_risk_host h
+            LEFT JOIN vuln_risk vr ON h.cve_id = vr.cve_id
+            LEFT JOIN cve ON cve.id = h.cve_id
+            ORDER BY h.risk_score DESC LIMIT 10
+        """).fetchall()
+
+    class VulnReport(FPDF):
+        def header(self):
+            if _font_path.exists():
+                self.set_font("dejavu_b", size=10)
+            else:
+                self.set_font("Helvetica", "B", 10)
+            self.set_fill_color(102, 126, 234)
+            self.set_text_color(255, 255, 255)
+            self.cell(0, 10, "Vulnerability Report — Vuln Collector", fill=True, align="C")
+            self.set_text_color(0, 0, 0)
+            self.ln(2)
+
+        def footer(self):
+            self.set_y(-12)
+            if _font_path.exists():
+                self.set_font("dejavu", size=8)
+            else:
+                self.set_font("Helvetica", size=8)
+            self.set_text_color(150, 150, 150)
+            self.cell(0, 10, f"Generated {today_str}  |  Page {self.page_no()}", align="C")
+            self.set_text_color(0, 0, 0)
+
+    pdf = VulnReport(orientation="L", unit="mm", format="A4")
+    pdf.set_auto_page_break(auto=True, margin=15)
+
+    if _font_path.exists():
+        pdf.add_font("dejavu",   fname=str(_font_path))
+        if _font_bold.exists():
+            pdf.add_font("dejavu_b", fname=str(_font_bold))
+        else:
+            pdf.add_font("dejavu_b", fname=str(_font_path))
+        F_NORMAL = "dejavu"
+        F_BOLD   = "dejavu_b"
+    else:
+        F_NORMAL = "Helvetica"
+        F_BOLD   = "Helvetica"
+
+    # ── Page 1: Summary ─────────────────────────────────────────────
+    pdf.add_page()
+    pdf.set_font(F_BOLD, size=16)
+    pdf.ln(4)
+    pdf.cell(0, 12, "Отчёт об уязвимостях", align="C")
+    pdf.ln(6)
+    pdf.set_font(F_NORMAL, size=11)
+    pdf.cell(0, 8, f"Дата формирования: {today_str}", align="C")
+    pdf.ln(12)
+
+    def summary_box(label, value, fill_rgb=(240, 240, 240)):
+        pdf.set_fill_color(*fill_rgb)
+        pdf.set_font(F_NORMAL, size=9)
+        pdf.cell(52, 8, label, border=1, fill=True)
+        pdf.set_font(F_BOLD, size=9)
+        pdf.cell(28, 8, str(value), border=1, fill=True, align="C")
+        pdf.set_fill_color(240, 240, 240)
+
+    pdf.set_font(F_BOLD, size=11)
+    pdf.cell(0, 8, "Сводка")
+    pdf.ln(9)
+
+    rows_pairs = [
+        ("Всего хостов",            hosts_cnt,    (235,245,255)),
+        ("Всего пакетов",           total_pkgs,   (235,245,255)),
+        ("Уязвимых пакетов",        vuln_pkgs,    (255,235,235)),
+        ("Критических (CVSS≥9)",    critical_cnt, (255,200,200)),
+        ("Высоких (CVSS 7–9)",      high_cnt,     (255,220,180)),
+        ("В работе",                in_task_cnt,  (255,245,210)),
+        ("Просрочено SLA",          overdue_cnt,  (255,200,200)),
+        ("Исправлено",              fixed_cnt,    (210,240,215)),
+    ]
+    for label, val, color in rows_pairs:
+        summary_box(label, val, color)
+        pdf.ln(9)
+
+    # ── Page 2+: Vulnerable packages table ──────────────────────────
+    pdf.add_page()
+    pdf.set_font(F_BOLD, size=11)
+    pdf.cell(0, 8, f"Уязвимые пакеты (топ {min(len(pkg_rows),100)} по CVSS)")
+    pdf.ln(9)
+
+    col_w = [62, 22, 16, 18, 16, 14, 22, 28]
+    headers = ["Название", "Версия", "CVE", "CVSS", "EPSS", "KEV", "Статус", "SLA дедлайн"]
+    pdf.set_fill_color(102, 126, 234)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font(F_BOLD, size=8)
+    for w, h in zip(col_w, headers):
+        pdf.cell(w, 7, h, border=1, fill=True, align="C")
+    pdf.ln()
+    pdf.set_text_color(0, 0, 0)
+
+    status_labels = {"new": "Новое", "in_task": "В работе", "ignore": "Игнор", "fixed": "Исправлено"}
+    for i, row in enumerate(pkg_rows):
+        fill = (i % 2 == 0)
+        pdf.set_fill_color(248, 248, 255) if fill else pdf.set_fill_color(255, 255, 255)
+        pdf.set_font(F_NORMAL, size=7)
+        cvss = row["cvss_max"] or 0
+        if cvss >= 9:
+            pdf.set_text_color(180, 0, 0)
+        elif cvss >= 7:
+            pdf.set_text_color(200, 80, 0)
+        else:
+            pdf.set_text_color(0, 0, 0)
+        vals = [
+            str(row["original_name"] or "")[:30],
+            str(row["version"] or "")[:10],
+            str(row["cves_found"] or 0),
+            f"{cvss:.1f}",
+            f"{row['ep_ss']:.3f}" if row["ep_ss"] else "0.000",
+            "ДА" if row["in_kev"] else "НЕТ",
+            status_labels.get(row["status"], row["status"] or ""),
+            str(row["due_date"] or ""),
+        ]
+        for w, v in zip(col_w, vals):
+            pdf.cell(w, 6, v, border=1, fill=fill, align="C" if w <= 22 else "L")
+        pdf.set_text_color(0, 0, 0)
+        pdf.ln()
+
+    # ── Top CVEs section ────────────────────────────────────────────
+    if top_cves:
+        pdf.ln(4)
+        pdf.set_font(F_BOLD, size=11)
+        pdf.cell(0, 8, "Топ-10 CVE по риску")
+        pdf.ln(9)
+        cve_col_w = [40, 20, 20, 16, 20, 151]
+        cve_hdrs  = ["CVE ID", "Риск", "CVSS", "KEV", "EPSS", "Описание"]
+        pdf.set_fill_color(102, 126, 234)
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_font(F_BOLD, size=8)
+        for w, h in zip(cve_col_w, cve_hdrs):
+            pdf.cell(w, 7, h, border=1, fill=True, align="C")
+        pdf.ln()
+        pdf.set_text_color(0, 0, 0)
+        for i, row in enumerate(top_cves):
+            fill = (i % 2 == 0)
+            pdf.set_fill_color(248, 248, 255) if fill else pdf.set_fill_color(255, 255, 255)
+            pdf.set_font(F_NORMAL, size=7)
+            cve_vals = [
+                str(row["cve_id"] or ""),
+                f"{row['risk_score']:.2f}" if row["risk_score"] else "0.00",
+                f"{row['cvss_score']:.1f}" if row["cvss_score"] else "—",
+                "ДА" if row["in_kev"] else "НЕТ",
+                f"{row['ep_ss']:.3f}" if row["ep_ss"] else "0.000",
+                str(row["description"] or "")[:90],
+            ]
+            for w, v in zip(cve_col_w, cve_vals):
+                pdf.cell(w, 6, v, border=1, fill=fill)
+            pdf.ln()
+
+    pdf_bytes = bytes(pdf.output())
+    filename  = f"vuln_report_{today_str}.pdf"
+    return StreamingResponse(
+        iter([pdf_bytes]),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @app.get("/api/export/csv")
 async def export_csv(filter: str = "all"):
     """Export software management data as CSV.
