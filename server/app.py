@@ -14,6 +14,7 @@ from datetime import datetime, timezone, date, timedelta
 import socket
 import threading
 import subprocess
+import base64
 
 # Configure logging
 logging.basicConfig(
@@ -2355,6 +2356,118 @@ async def update_scan_queue(request: Request):
         conn.commit()
     
     return JSONResponse({"success": True, "queue_id": queue_id, "status": status})
+
+
+# ---------------------------------------------------------------------------
+# SSH Credentials helpers
+# ---------------------------------------------------------------------------
+
+def _get_fernet():
+    """Return a Fernet instance keyed from SSH_SECRET_KEY env var.
+
+    If SSH_SECRET_KEY is not set, a key is derived from a static fallback
+    and a warning is logged. Production deployments should always set the env var.
+    """
+    raw = os.environ.get("SSH_SECRET_KEY", "")
+    if raw:
+        # Pad/trim to 32 bytes, then URL-safe base64-encode for Fernet
+        key_bytes = raw.encode()[:32].ljust(32, b"\0")
+    else:
+        logger.warning("SSH_SECRET_KEY not set — using insecure fallback key for credential encryption")
+        key_bytes = b"diplom_fallback_key_000000000000"
+    try:
+        from cryptography.fernet import Fernet
+        fernet_key = base64.urlsafe_b64encode(key_bytes)
+        return Fernet(fernet_key)
+    except ImportError:
+        raise HTTPException(status_code=500, detail="cryptography package not installed")
+
+
+def _encrypt_secret(plaintext: str) -> str:
+    return _get_fernet().encrypt(plaintext.encode()).decode()
+
+
+def _decrypt_secret(ciphertext: str) -> str:
+    return _get_fernet().decrypt(ciphertext.encode()).decode()
+
+
+# ---------------------------------------------------------------------------
+# SSH Credentials API
+# ---------------------------------------------------------------------------
+
+@app.get("/api/ssh-credentials")
+async def list_ssh_credentials():
+    """List all SSH credential entries (secrets never returned)."""
+    with get_db() as conn:
+        rows = conn.execute("""
+            SELECT id, hostname, port, username, auth_type, key_path, use_sudo, updated_at
+            FROM ssh_credentials
+            ORDER BY hostname
+        """).fetchall()
+    return JSONResponse([dict(r) for r in rows])
+
+
+@app.post("/api/ssh-credentials")
+async def upsert_ssh_credentials(request: Request):
+    """Create or update SSH credentials for a hostname."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    hostname = (body.get("hostname") or "").strip()
+    username = (body.get("username") or "").strip()
+    auth_type = body.get("auth_type", "password")  # "password" or "key"
+    secret = body.get("secret", "")                 # password or key passphrase
+    key_path = (body.get("key_path") or "").strip()
+    port = int(body.get("port", 22))
+    use_sudo = int(bool(body.get("use_sudo", False)))
+
+    if not hostname or not username:
+        raise HTTPException(status_code=400, detail="hostname and username are required")
+    if auth_type not in ("password", "key"):
+        raise HTTPException(status_code=400, detail="auth_type must be 'password' or 'key'")
+
+    encrypted = _encrypt_secret(secret) if secret else None
+
+    with get_db() as conn:
+        existing = conn.execute(
+            "SELECT id, encrypted_secret FROM ssh_credentials WHERE hostname=?", (hostname,)
+        ).fetchone()
+
+        if existing:
+            # Keep old secret if no new one was provided
+            new_encrypted = encrypted if encrypted is not None else existing["encrypted_secret"]
+            conn.execute("""
+                UPDATE ssh_credentials
+                SET port=?, username=?, auth_type=?, encrypted_secret=?,
+                    key_path=?, use_sudo=?, updated_at=CURRENT_TIMESTAMP
+                WHERE hostname=?
+            """, (port, username, auth_type, new_encrypted, key_path, use_sudo, hostname))
+        else:
+            conn.execute("""
+                INSERT INTO ssh_credentials
+                    (hostname, port, username, auth_type, encrypted_secret, key_path, use_sudo)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (hostname, port, username, auth_type, encrypted, key_path, use_sudo))
+        conn.commit()
+
+    logger.info(f"SSH credentials saved for {hostname} (auth_type={auth_type})")
+    return JSONResponse({"ok": True, "hostname": hostname})
+
+
+@app.delete("/api/ssh-credentials/{hostname}")
+async def delete_ssh_credentials(hostname: str):
+    """Delete SSH credentials for a hostname."""
+    with get_db() as conn:
+        deleted = conn.execute(
+            "DELETE FROM ssh_credentials WHERE hostname=?", (hostname,)
+        ).rowcount
+        conn.commit()
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Credentials not found")
+    logger.info(f"SSH credentials deleted for {hostname}")
+    return JSONResponse({"ok": True})
 
 
 if __name__ == "__main__":

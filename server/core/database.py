@@ -174,6 +174,22 @@ def _create_tables(c):
         )
     """)
 
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS ssh_credentials (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            hostname TEXT NOT NULL UNIQUE,
+            port INTEGER NOT NULL DEFAULT 22,
+            username TEXT NOT NULL,
+            auth_type TEXT NOT NULL DEFAULT 'password',
+            encrypted_secret TEXT,
+            key_path TEXT,
+            use_sudo INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_ssh_credentials_hostname ON ssh_credentials(hostname)")
+
 
 def _run_migrations(c):
     """Idempotent ALTER TABLE migrations."""
@@ -222,6 +238,23 @@ def _run_migrations(c):
 
     # Always ensure new columns exist (idempotent, safe on any schema version)
     _safe_alter(c, "ALTER TABLE software_management ADD COLUMN due_date TEXT")
+
+    # ssh_credentials table (may not exist on older DBs)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS ssh_credentials (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            hostname TEXT NOT NULL UNIQUE,
+            port INTEGER NOT NULL DEFAULT 22,
+            username TEXT NOT NULL,
+            auth_type TEXT NOT NULL DEFAULT 'password',
+            encrypted_secret TEXT,
+            key_path TEXT,
+            use_sudo INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_ssh_credentials_hostname ON ssh_credentials(hostname)")
 
     # Fix any legacy invalid status values
     c.execute("UPDATE software_management SET status = 'new' WHERE status IS NULL OR status = ''")

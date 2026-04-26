@@ -4,3 +4,5 @@ requests
 python-multipart
 jinja2
 fpdf2
+paramiko
+cryptography
