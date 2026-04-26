@@ -1861,16 +1861,16 @@ async def export_pdf():
     _ttf_bold = next((p for p in _ttf_bold_candidates if p.exists()), None) or _ttf
 
     def _s(text) -> str:
-        “””Sanitize text: safe for Latin-1 fallback if no Unicode font available.”””
+        """Sanitize text: safe for Latin-1 fallback if no Unicode font available."""
         if not text:
-            return “”
+            return ""
         text = str(text)
         if _ttf:
             return text  # Unicode font handles everything
-        for src, dst in [(“—“, “-”), (“–“, “-”), (“’”, “’”), (“’”, “’”),
-                         (“””, ‘”’), (“””, ‘”’), (“…”, “...”), (“×”, “x”)]:
+        for src, dst in [("—", "-"), ("–", "-"), ("'", "'"), ("'", "'"),
+                         (""", '"'), (""", '"'), ("…", "..."), ("×", "x")]:
             text = text.replace(src, dst)
-        return text.encode(“latin-1”, errors=”replace”).decode(“latin-1”)
+        return text.encode("latin-1", errors="replace").decode("latin-1")
 
     today_str = date.today().isoformat()
 
