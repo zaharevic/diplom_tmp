@@ -11,11 +11,14 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Commands to collect packages per OS family
+# Commands to collect packages per OS family.
+# PATH is set explicitly because paramiko runs without a login shell.
+_PATH_PREFIX = "export PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH && "
+
 _COLLECT_COMMANDS = {
-    "debian": "dpkg-query -W -f='${Package} ${Version}\\n' 2>/dev/null",
-    "rpm":    "rpm -qa --queryformat '%{NAME} %{VERSION}-%{RELEASE}\\n' 2>/dev/null",
-    "alpine": "apk info -v 2>/dev/null",
+    "debian": _PATH_PREFIX + "dpkg-query -W -f='${Package} ${Version}\\n' 2>/dev/null",
+    "rpm":    _PATH_PREFIX + "rpm -qa --queryformat '%{NAME} %{VERSION}-%{RELEASE}\\n' 2>/dev/null",
+    "alpine": _PATH_PREFIX + "apk info -v 2>/dev/null",
 }
 
 # Timeout constants (seconds)
@@ -127,7 +130,7 @@ def _detect_os(client, use_sudo: bool) -> str:
 
     # Fallback: check which package manager is available
     for cmd, family in (("dpkg", "debian"), ("rpm", "rpm"), ("apk", "alpine")):
-        out, _, code = _exec(client, f"which {cmd} 2>/dev/null")
+        out, _, code = _exec(client, f"export PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH && which {cmd} 2>/dev/null")
         if code == 0 and out:
             return family
 
