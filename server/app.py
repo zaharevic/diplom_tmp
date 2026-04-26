@@ -1840,23 +1840,23 @@ async def export_pdf():
         from fpdf import FPDF
         from pathlib import Path
     except ImportError:
-        raise HTTPException(status_code=500, detail=”fpdf2 not installed. Run: pip install fpdf2”)
+        raise HTTPException(status_code=500, detail='fpdf2 not installed. Run: pip install fpdf2')
 
     # Locate DejaVu font: first look in /app/fonts/ (volume-mounted), then system paths
     _font_candidates = [
-        Path(“/app/fonts/DejaVuSansCondensed.ttf”),
-        Path(“/app/fonts/DejaVuSans.ttf”),
-        Path(“/usr/share/fonts/truetype/dejavu/DejaVuSansCondensed.ttf”),
-        Path(“/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf”),
-        Path(“/usr/share/fonts/dejavu/DejaVuSans.ttf”),
+        Path('/app/fonts/DejaVuSansCondensed.ttf'),
+        Path('/app/fonts/DejaVuSans.ttf'),
+        Path('/usr/share/fonts/truetype/dejavu/DejaVuSansCondensed.ttf'),
+        Path('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'),
+        Path('/usr/share/fonts/dejavu/DejaVuSans.ttf'),
     ]
     _ttf = next((p for p in _font_candidates if p.exists()), None)
     _ttf_bold_candidates = [
-        Path(“/app/fonts/DejaVuSansCondensed-Bold.ttf”),
-        Path(“/app/fonts/DejaVuSans-Bold.ttf”),
-        Path(“/usr/share/fonts/truetype/dejavu/DejaVuSansCondensed-Bold.ttf”),
-        Path(“/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf”),
-        Path(“/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf”),
+        Path('/app/fonts/DejaVuSansCondensed-Bold.ttf'),
+        Path('/app/fonts/DejaVuSans-Bold.ttf'),
+        Path('/usr/share/fonts/truetype/dejavu/DejaVuSansCondensed-Bold.ttf'),
+        Path('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'),
+        Path('/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf'),
     ]
     _ttf_bold = next((p for p in _ttf_bold_candidates if p.exists()), None) or _ttf
 
