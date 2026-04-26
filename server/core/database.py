@@ -244,6 +244,7 @@ def _run_migrations(c):
         CREATE TABLE IF NOT EXISTS ssh_credentials (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             hostname TEXT NOT NULL UNIQUE,
+            host_address TEXT NOT NULL DEFAULT '',
             port INTEGER NOT NULL DEFAULT 22,
             username TEXT NOT NULL,
             auth_type TEXT NOT NULL DEFAULT 'password',
@@ -255,6 +256,7 @@ def _run_migrations(c):
         )
     """)
     c.execute("CREATE INDEX IF NOT EXISTS idx_ssh_credentials_hostname ON ssh_credentials(hostname)")
+    _safe_alter(c, "ALTER TABLE ssh_credentials ADD COLUMN host_address TEXT NOT NULL DEFAULT ''")
 
     # Fix any legacy invalid status values
     c.execute("UPDATE software_management SET status = 'new' WHERE status IS NULL OR status = ''")

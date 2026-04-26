@@ -116,6 +116,10 @@
 
         <h3 style="margin-bottom:12px;font-size:15px">Учётные данные</h3>
         <div class="form-group">
+            <label>Адрес подключения (IP или hostname) <span style="color:#999;font-size:11px">— если отличается от имени хоста</span></label>
+            <input type="text" id="sshHostAddress" placeholder="192.168.1.50">
+        </div>
+        <div class="form-group">
             <label>Порт</label>
             <input type="number" id="sshPort" value="22" min="1" max="65535">
         </div>
@@ -281,6 +285,7 @@ async function openSSHModal(hostname) {
     document.getElementById('sshModalHost').textContent = hostname;
     document.getElementById('sshError').textContent = '';
     // Reset fields
+    document.getElementById('sshHostAddress').value = '';
     document.getElementById('sshPort').value = 22;
     document.getElementById('sshUsername').value = '';
     document.getElementById('sshSecret').value = '';
@@ -295,6 +300,7 @@ async function openSSHModal(hostname) {
         const list = await r.json();
         const cred = list.find(c => c.hostname === hostname);
         if (cred) {
+            document.getElementById('sshHostAddress').value = cred.host_address || '';
             document.getElementById('sshPort').value = cred.port || 22;
             document.getElementById('sshUsername').value = cred.username || '';
             document.getElementById('sshAuthType').value = cred.auth_type || 'password';
@@ -326,6 +332,7 @@ async function saveSSHCredentials() {
     const hostname = _sshCurrentHost;
     const body = {
         hostname,
+        host_address: document.getElementById('sshHostAddress').value.trim(),
         port: parseInt(document.getElementById('sshPort').value) || 22,
         username: document.getElementById('sshUsername').value.trim(),
         auth_type: document.getElementById('sshAuthType').value,

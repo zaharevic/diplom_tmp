@@ -2457,8 +2457,9 @@ def _run_ssh_scan_bg(hostname: str, scan_id: int):
         conn.commit()
 
     try:
+        connect_addr = creds.get("host_address") or creds["hostname"]
         packages = scan_host(
-            hostname=creds["hostname"],
+            hostname=connect_addr,
             port=creds["port"],
             username=creds["username"],
             password=creds["secret"] if creds["auth_type"] == "password" else None,
@@ -2591,7 +2592,7 @@ async def list_ssh_credentials():
     """List all SSH credential entries (secrets never returned)."""
     with get_db() as conn:
         rows = conn.execute("""
-            SELECT id, hostname, port, username, auth_type, key_path, use_sudo, updated_at
+            SELECT id, hostname, host_address, port, username, auth_type, key_path, use_sudo, updated_at
             FROM ssh_credentials
             ORDER BY hostname
         """).fetchall()
@@ -2607,6 +2608,7 @@ async def upsert_ssh_credentials(request: Request):
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
     hostname = (body.get("hostname") or "").strip()
+    host_address = (body.get("host_address") or "").strip()
     username = (body.get("username") or "").strip()
     auth_type = body.get("auth_type", "password")  # "password" or "key"
     secret = body.get("secret", "")                 # password or key passphrase
@@ -2627,20 +2629,19 @@ async def upsert_ssh_credentials(request: Request):
         ).fetchone()
 
         if existing:
-            # Keep old secret if no new one was provided
             new_encrypted = encrypted if encrypted is not None else existing["encrypted_secret"]
             conn.execute("""
                 UPDATE ssh_credentials
-                SET port=?, username=?, auth_type=?, encrypted_secret=?,
+                SET host_address=?, port=?, username=?, auth_type=?, encrypted_secret=?,
                     key_path=?, use_sudo=?, updated_at=CURRENT_TIMESTAMP
                 WHERE hostname=?
-            """, (port, username, auth_type, new_encrypted, key_path, use_sudo, hostname))
+            """, (host_address, port, username, auth_type, new_encrypted, key_path, use_sudo, hostname))
         else:
             conn.execute("""
                 INSERT INTO ssh_credentials
-                    (hostname, port, username, auth_type, encrypted_secret, key_path, use_sudo)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (hostname, port, username, auth_type, encrypted, key_path, use_sudo))
+                    (hostname, host_address, port, username, auth_type, encrypted_secret, key_path, use_sudo)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (hostname, host_address, port, username, auth_type, encrypted, key_path, use_sudo))
         conn.commit()
 
     logger.info(f"SSH credentials saved for {hostname} (auth_type={auth_type})")
