@@ -17,6 +17,11 @@
 .modal-buttons { display:flex; gap:10px; margin-top:20px; }
 .crit-select { padding:4px 6px; }
 .crit-saved  { color:#2e7d32; font-size:12px; margin-left:4px; }
+.tag-chip    { display:inline-block; background:#e3f2fd; color:#1565c0; border-radius:12px;
+               padding:1px 8px; font-size:11px; margin:1px; }
+.tag-chip.prod { background:#fce4ec; color:#880e4f; }
+.tag-chip.dmz  { background:#f3e5f5; color:#4a148c; }
+.tag-chip.dev  { background:#e8f5e9; color:#1b5e20; }
 {% endblock %}
 
 {% block content %}
@@ -36,6 +41,7 @@
                 <th>Рисков</th>
                 <th>Макс. риск</th>
                 <th>Критичность</th>
+                <th>Теги</th>
                 <th>Действия</th>
             </tr>
         </thead>
@@ -59,12 +65,22 @@
                     </select>
                     <span class="crit-saved" id="crit-saved-{{ h.hostname }}" style="display:none;">✓</span>
                 </td>
+                <td id="tags-{{ h.hostname }}">
+                    {% for tag in h.tags %}
+                    <span class="tag-chip {{ tag }}">{{ tag }}</span>
+                    {% else %}
+                    <span style="color:#bbb;font-size:12px">—</span>
+                    {% endfor %}
+                    <button onclick="editTags('{{ h.hostname }}')"
+                            style="border:none;background:none;cursor:pointer;font-size:12px;color:#999;padding:0 2px;"
+                            title="Редактировать теги">✏️</button>
+                </td>
                 <td>
                     <button class="btn btn-primary" onclick="viewSoftware('{{ h.hostname }}')">Просмотр</button>
                 </td>
             </tr>
             {% else %}
-            <tr><td colspan="10" class="table-empty">Нет хостов</td></tr>
+            <tr><td colspan="11" class="table-empty">Нет хостов</td></tr>
             {% endfor %}
         </tbody>
     </table>
@@ -152,6 +168,28 @@ function viewSoftware(hostname) {
 
 function closeSoftwareModal() {
     document.getElementById('softwareModal').classList.remove('active');
+}
+
+async function editTags(hostname) {
+    const cell = document.getElementById('tags-' + hostname);
+    const current = Array.from(cell.querySelectorAll('.tag-chip')).map(el => el.textContent).join(', ');
+    const input = prompt(`Теги для ${hostname} (через запятую):\nПримеры: prod, dev, dmz, web, db`, current);
+    if (input === null) return;
+    const tags = input.split(',').map(t => t.trim()).filter(Boolean);
+    try {
+        await fetch('/api/hosts/tags', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({hostname, tags})
+        });
+        // Re-render chips without reload
+        const chips = tags.length
+            ? tags.map(t => `<span class="tag-chip ${t}">${t}</span>`).join(' ')
+            : '<span style="color:#bbb;font-size:12px">—</span>';
+        cell.innerHTML = chips + ` <button onclick="editTags('${hostname}')"
+            style="border:none;background:none;cursor:pointer;font-size:12px;color:#999;padding:0 2px;"
+            title="Редактировать теги">✏️</button>`;
+    } catch (err) { alert('Ошибка: ' + err.message); }
 }
 
 pingAllHosts();

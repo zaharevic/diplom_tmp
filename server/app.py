@@ -485,10 +485,11 @@ async def hosts_page(request: Request):
         c.execute("""
             SELECT h.hostname,
                    r.ip, r.os, r.received_at,
-                   IFNULL(s.software_count, 0) AS software_count,
-                   IFNULL(hm.criticality, 1)   AS criticality,
-                   IFNULL(vr.risky_count, 0)    AS risky_count,
-                   IFNULL(vr.top_risk,   0.0)   AS top_risk
+                   IFNULL(s.software_count, 0)         AS software_count,
+                   IFNULL(hm.criticality, 1)           AS criticality,
+                   IFNULL(vr.risky_count, 0)           AS risky_count,
+                   IFNULL(vr.top_risk,   0.0)          AS top_risk,
+                   IFNULL(t.tags, '')                  AS tags
             FROM (
                 SELECT hostname FROM reports
                 UNION SELECT hostname FROM software
@@ -510,9 +511,18 @@ async def hosts_page(request: Request):
                 WHERE risk_score > 0
                 GROUP BY host
             ) vr ON vr.host = h.hostname
+            LEFT JOIN (
+                SELECT host, GROUP_CONCAT(tag, ',') AS tags
+                FROM host_tags GROUP BY host
+            ) t ON t.host = h.hostname
             ORDER BY h.hostname
         """)
-        hosts = [dict(row) for row in c.fetchall()]
+        raw_hosts = c.fetchall()
+        hosts = []
+        for row in raw_hosts:
+            d = dict(row)
+            d["tags"] = [t for t in (d.get("tags") or "").split(",") if t]
+            hosts.append(d)
 
     return templates.TemplateResponse(request, "hosts.html", {
         "active_page": "hosts",
@@ -531,6 +541,26 @@ async def packages_page(request: Request):
         "active_page": "packages",
         "hostnames": hostnames,
     })
+
+
+@app.post("/api/hosts/tags")
+async def set_host_tags(request: Request):
+    """Replace all tags for a host. Body: {hostname, tags: [...]}"""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+    hostname = body.get("hostname")
+    tags = body.get("tags", [])
+    if not hostname:
+        raise HTTPException(status_code=400, detail="hostname required")
+    tags = [t.strip().lower() for t in tags if t.strip()][:10]  # max 10 tags
+    with get_db() as conn:
+        conn.execute("DELETE FROM host_tags WHERE host=?", (hostname,))
+        for tag in tags:
+            conn.execute("INSERT OR IGNORE INTO host_tags (host, tag) VALUES (?, ?)", (hostname, tag))
+        conn.commit()
+    return JSONResponse({"ok": True, "tags": tags})
 
 
 @app.post("/api/hosts/criticality")

@@ -125,6 +125,15 @@ def _create_tables(c):
     c.execute("CREATE INDEX IF NOT EXISTS idx_hosts_criticality ON hosts(criticality)")
 
     c.execute("""
+        CREATE TABLE IF NOT EXISTS host_tags (
+            host TEXT NOT NULL,
+            tag  TEXT NOT NULL,
+            PRIMARY KEY (host, tag)
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_host_tags_host ON host_tags(host)")
+
+    c.execute("""
         CREATE TABLE IF NOT EXISTS vuln_exceptions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             cve_id TEXT NOT NULL,
