@@ -15,15 +15,21 @@
 
 .checkbox-col { width:40px; text-align:center; }
 .checkbox-col input { cursor:pointer; width:18px; height:18px; }
-.action-btns  { display:flex; gap:8px; }
-.btn-small    { padding:6px 12px; border:1px solid #ddd; background:white;
+.action-btns  { display:flex; gap:6px; flex-wrap:wrap; }
+.btn-small    { padding:4px 10px; border:1px solid #ddd; background:white;
                 border-radius:3px; cursor:pointer; font-size:12px; font-weight:500; }
 .btn-force    { background:#ff9800; color:white; border:none; }
+.hosts-list   { font-size:12px; color:#666; }
+.hosts-list span { background:#f0f0f0; border-radius:3px; padding:1px 5px;
+                   margin:1px; display:inline-block; }
+.cvss-high   { color:#c62828; font-weight:600; }
+.cvss-medium { color:#e65100; font-weight:600; }
+.cvss-low    { color:#2e7d32; }
 
 .modal { display:none; position:fixed; top:0; left:0; width:100%; height:100%;
          background:rgba(0,0,0,.5); z-index:1000; align-items:center; justify-content:center; }
 .modal.active { display:flex; }
-.modal-content{ background:white; padding:30px; border-radius:10px; max-width:500px; width:90%; }
+.modal-content{ background:white; padding:30px; border-radius:10px; max-width:520px; width:90%; }
 .form-group   { margin-bottom:15px; }
 .form-group label { display:block; margin-bottom:5px; font-weight:500; color:#333; }
 .form-group input,
@@ -74,19 +80,23 @@
     <table>
         <thead>
             <tr>
-                <th class="checkbox-col"><input type="checkbox" id="selectAll" onchange="toggleSelectAll(this.checked)"></th>
-                <th>Название приложения</th>
-                <th>Имя для NVD запроса</th>
+                <th class="checkbox-col">
+                    <input type="checkbox" id="selectAll" onchange="toggleSelectAll(this.checked)">
+                </th>
+                <th>Приложение</th>
+                <th>Версия</th>
+                <th>Хосты</th>
+                <th>CVE</th>
+                <th>CVSS макс.</th>
                 <th>EPSS</th>
                 <th>KEV</th>
                 <th>Последняя проверка</th>
                 <th>Статус</th>
-                <th>CVE найдено</th>
                 <th>Действия</th>
             </tr>
         </thead>
         <tbody id="softwareBody">
-            <tr><td colspan="9" class="table-empty">Загружение...</td></tr>
+            <tr><td colspan="11" class="table-empty">Загружение...</td></tr>
         </tbody>
     </table>
 </div>
@@ -96,24 +106,33 @@
 <script>
 let allSoftware = [];
 let currentFilter = 'all';
-let selectedPackages = new Set();
+let selectedKeys = new Set(); // "name|version"
+
+function rowKey(name, version) { return name + '|' + (version || ''); }
 
 async function loadSoftwareData() {
     try {
         const resp = await fetch('/api/software-management');
         allSoftware = await resp.json();
     } catch (err) {
-        console.error('Ошибка загрузки ПО:', err);
         document.getElementById('softwareBody').innerHTML =
-            '<tr><td colspan="9" style="color:#d32f2f;text-align:center">Ошибка загрузки данных</td></tr>';
+            '<tr><td colspan="11" style="color:#d32f2f;text-align:center">Ошибка загрузки данных</td></tr>';
     }
 }
 
 async function loadSoftware() {
     await loadSoftwareData();
-    selectedPackages.clear();
+    selectedKeys.clear();
     document.getElementById('selectAll').checked = false;
     renderSoftware();
+}
+
+function cvssClass(v) {
+    if (!v || v <= 0) return '';
+    if (v >= 9) return 'cvss-high';
+    if (v >= 7) return 'cvss-high';
+    if (v >= 4) return 'cvss-medium';
+    return 'cvss-low';
 }
 
 function renderSoftware() {
@@ -123,80 +142,106 @@ function renderSoftware() {
 
     const tbody = document.getElementById('softwareBody');
     if (filtered.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="9" class="table-empty">ПО не найдено</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="11" class="table-empty">ПО не найдено</td></tr>';
         updateBulkActionsUI();
         return;
     }
 
-    tbody.innerHTML = filtered.map(sw => `
-        <tr>
+    tbody.innerHTML = filtered.map(sw => {
+        const key     = rowKey(sw.original_name, sw.version);
+        const hostsHtml = (sw.hosts || []).map(h => `<span>${h}</span>`).join(' ');
+        const epssHtml  = sw.ep_ss > 0
+            ? `<strong style="color:#c62828">${sw.ep_ss.toFixed(3)}</strong>`
+            : '<span style="color:#999">-</span>';
+        const kevHtml   = sw.in_kev ? '<strong style="color:#c62828">ДА</strong>' : 'НЕТ';
+        const cveHtml   = sw.cves_found > 0
+            ? `<strong style="color:#d32f2f">${sw.cves_found}</strong>`
+            : '<span style="color:#999">-</span>';
+        const cvssVal   = sw.cvss_max > 0
+            ? `<span class="${cvssClass(sw.cvss_max)}">${sw.cvss_max.toFixed(1)}</span>`
+            : '<span style="color:#999">-</span>';
+
+        return `<tr>
             <td class="checkbox-col">
-                <input type="checkbox" data-name="${sw.original_name}"
-                       onchange='togglePackage(${JSON.stringify(sw.original_name)}, this.checked)'>
+                <input type="checkbox" data-key="${key}"
+                       onchange="toggleItem('${key}', this.checked)">
             </td>
             <td><strong>${sw.original_name}</strong></td>
-            <td><code>${sw.normalized_for_nvd}</code></td>
-            <td>${(sw.ep_ss && Number(sw.ep_ss) > 0)
-                ? '<strong style="color:#c62828">' + Number(sw.ep_ss).toFixed(3) + '</strong>'
-                : '<span style="color:#999;">-</span>'}</td>
-            <td>${sw.in_kev ? '<strong style="color:#c62828">ДА</strong>' : 'НЕТ'}</td>
-            <td>${sw.last_checked || '-'}</td>
+            <td>${sw.version || '<span style="color:#999">—</span>'}</td>
+            <td class="hosts-list">${hostsHtml || '<span style="color:#999">—</span>'}</td>
+            <td>${cveHtml}</td>
+            <td>${cvssVal}</td>
+            <td>${epssHtml}</td>
+            <td>${kevHtml}</td>
+            <td>${sw.last_checked ? sw.last_checked.slice(0,16) : '<span style="color:#999">—</span>'}</td>
             <td><span class="status-${sw.status}" style="border-radius:4px;padding:2px 8px;font-size:12px;">${sw.status}</span></td>
-            <td>${sw.cached
-                ? '<span style="color:#d32f2f;font-weight:600;">' + sw.cves_found + ' CVE</span>'
-                : '<span style="color:#999;">-</span>'}</td>
             <td>
                 <div class="action-btns">
-                    <button class="btn-small btn-force" onclick='forceCheck(${JSON.stringify(sw.original_name)})'>⚡ Переопроверить</button>
-                    <button class="btn-small" onclick='viewCVEs(${JSON.stringify(sw.original_name)})'>🔍 CVE</button>
-                    <button class="btn-small" onclick='openEditModal(${JSON.stringify(sw.original_name)},
-                        ${JSON.stringify(sw.normalized_for_nvd)}, ${JSON.stringify(sw.status)},
-                        ${JSON.stringify(sw.comment || "")})'>✏️ Изменить</button>
+                    <button class="btn-small btn-force"
+                            onclick='forceCheck(${JSON.stringify(sw.original_name)}, ${JSON.stringify(sw.version || "")})'>
+                        ⚡ Скан
+                    </button>
+                    <button class="btn-small"
+                            onclick='viewCVEs(${JSON.stringify(sw.original_name)}, ${JSON.stringify(sw.version || "")})'>
+                        🔍 CVE
+                    </button>
+                    <button class="btn-small"
+                            onclick='openEditModal(${JSON.stringify(sw.original_name)}, ${JSON.stringify(sw.version || "")},
+                                ${JSON.stringify(sw.normalized_for_nvd)}, ${JSON.stringify(sw.status)},
+                                ${JSON.stringify(sw.comment || "")})'>
+                        ✏️
+                    </button>
                 </div>
             </td>
-        </tr>`).join('');
+        </tr>`;
+    }).join('');
 
-    selectedPackages.forEach(name => {
-        document.querySelectorAll('.checkbox-col input').forEach(cb => {
-            if (cb.getAttribute('data-name') === name) cb.checked = true;
-        });
+    // Restore checkboxes
+    selectedKeys.forEach(k => {
+        const cb = document.querySelector(`input[data-key="${CSS.escape(k)}"]`);
+        if (cb) cb.checked = true;
     });
     updateBulkActionsUI();
 }
 
-function togglePackage(name, checked) {
-    if (checked) selectedPackages.add(name);
-    else { selectedPackages.delete(name); document.getElementById('selectAll').checked = false; }
+function toggleItem(key, checked) {
+    if (checked) selectedKeys.add(key);
+    else { selectedKeys.delete(key); document.getElementById('selectAll').checked = false; }
     updateBulkActionsUI();
 }
 
 function toggleSelectAll(checked) {
     const filtered = currentFilter === 'all' ? allSoftware : allSoftware.filter(s => s.status === currentFilter);
-    selectedPackages.clear();
-    if (checked) filtered.forEach(sw => selectedPackages.add(sw.original_name));
-    document.querySelectorAll('.checkbox-col input').forEach(cb => cb.checked = checked);
+    selectedKeys.clear();
+    if (checked) filtered.forEach(sw => selectedKeys.add(rowKey(sw.original_name, sw.version)));
+    document.querySelectorAll('.checkbox-col input[data-key]').forEach(cb => cb.checked = checked);
     updateBulkActionsUI();
 }
 
 function updateBulkActionsUI() {
-    const count = selectedPackages.size;
+    const count = selectedKeys.size;
     document.getElementById('selectedCount').textContent = count;
     document.getElementById('bulkActions').classList.toggle('active', count > 0);
 }
 
 function clearSelection() {
-    selectedPackages.clear();
+    selectedKeys.clear();
     document.getElementById('selectAll').checked = false;
-    document.querySelectorAll('.checkbox-col input').forEach(cb => cb.checked = false);
+    document.querySelectorAll('.checkbox-col input[data-key]').forEach(cb => cb.checked = false);
     updateBulkActionsUI();
 }
 
 async function applyBulkStatus(newStatus) {
-    if (selectedPackages.size === 0) return alert('⚠️ Не выбрано приложений');
+    if (selectedKeys.size === 0) return alert('⚠️ Не выбрано приложений');
     const label = {in_task: 'В работе', ignore: 'Игнорировать', new: 'Новое'}[newStatus];
-    if (!confirm(`Установить статус "${label}" для ${selectedPackages.size} приложений?`)) return;
+    if (!confirm(`Установить статус "${label}" для ${selectedKeys.size} записей?`)) return;
+
+    const packages = Array.from(selectedKeys).map(k => {
+        const idx = k.indexOf('|');
+        return { original_name: k.slice(0, idx), version: k.slice(idx + 1), status: newStatus, comment: '' };
+    });
+
     try {
-        const packages = Array.from(selectedPackages).map(n => ({original_name: n, status: newStatus, comment: ''}));
         const resp = await fetch('/api/software-management/bulk-update', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
@@ -204,7 +249,7 @@ async function applyBulkStatus(newStatus) {
         });
         if (resp.ok) {
             const result = await resp.json();
-            alert(`✓ Обновлено ${result.updated_count} приложений`);
+            alert(`✓ Обновлено ${result.updated_count} записей`);
             clearSelection();
             await refreshSoftware();
         } else {
@@ -222,8 +267,9 @@ function filterByStatus(status, btn) {
     renderSoftware();
 }
 
-function openEditModal(name, nvd, status, comment) {
-    document.getElementById('origName').value = name;
+function openEditModal(name, version, nvd, status, comment) {
+    document.getElementById('editName').value = name;
+    document.getElementById('editVersion').value = version;
     document.getElementById('nvdName').value = nvd;
     document.getElementById('statusSelect').value = status;
     document.getElementById('comment').value = comment;
@@ -237,65 +283,73 @@ async function saveChanges() {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({
-                original_name: document.getElementById('origName').value,
+                original_name: document.getElementById('editName').value,
+                version:       document.getElementById('editVersion').value,
                 normalized_for_nvd: document.getElementById('nvdName').value,
-                status: document.getElementById('statusSelect').value,
+                status:  document.getElementById('statusSelect').value,
                 comment: document.getElementById('comment').value
             })
         });
-        if (resp.ok) { alert('✓ Успешно сохранено'); closeEditModal(); loadSoftware(); }
+        if (resp.ok) { closeEditModal(); await refreshSoftware(); }
         else alert('❌ Ошибка при сохранении');
     } catch (err) { alert('Ошибка: ' + err.message); }
 }
 
-async function forceCheck(packageName) {
-    if (!confirm('Переопроверить этот пакет? (игнорировать кэш)')) return;
+async function forceCheck(packageName, version) {
+    if (!confirm(`Переопроверить ${packageName} ${version}?`)) return;
     try {
         const resp = await fetch('/api/force-check', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({package_name: packageName})
+            body: JSON.stringify({package_name: packageName, version: version || null})
         });
         const result = await resp.json();
         alert(result.cves_found > 0
-            ? `✓ Найдено ${result.cves_found} CVE, максимум CVSS: ${result.cvss_max.toFixed(1)}`
+            ? `✓ Найдено ${result.cves_found} CVE, макс CVSS: ${result.cvss_max.toFixed(1)}`
             : '✓ Уязвимостей не найдено');
         await refreshSoftware();
     } catch (err) { alert('❌ Ошибка: ' + err.message); }
 }
 
-async function viewCVEs(packageName) {
+async function viewCVEs(packageName, version) {
     const modal = document.getElementById('cveModal');
     const body  = document.getElementById('cveModalBody');
-    document.getElementById('cveModalTitle').textContent = 'CVE для ' + packageName;
+    const title = `CVE для ${packageName}${version ? ' ' + version : ''}`;
+    document.getElementById('cveModalTitle').textContent = title;
     body.innerHTML = 'Загружение...';
     modal.classList.add('active');
     try {
-        const resp = await fetch('/api/package-cves?package_name=' + encodeURIComponent(packageName));
+        const url = `/api/package-cves?package_name=${encodeURIComponent(packageName)}`
+                  + (version ? `&version=${encodeURIComponent(version)}` : '');
+        const resp = await fetch(url);
         const data = await resp.json();
-        if (data.error) { body.innerHTML = '<div style="color:#d32f2f">Ошибка: ' + data.error + '</div>'; return; }
+        if (data.error) { body.innerHTML = `<div style="color:#d32f2f">Ошибка: ${data.error}</div>`; return; }
         if (!data.cves || !data.cves.length) {
-            body.innerHTML = '<div style="color:#666">CVE не найдены для этого пакета в локальной базе NVD.</div>';
+            body.innerHTML = '<div style="color:#666">CVE не найдены в локальной базе NVD.</div>';
             return;
         }
         const rows = data.cves.map(c => {
-            const cpeHtml = (c.cpe_matches && c.cpe_matches.length)
-                ? '<ul>' + c.cpe_matches.slice(0,10).map(x => `<li><code>${x}</code></li>`).join('') + '</ul>'
-                : '-';
             const epss = c.ep_ss ? Number(c.ep_ss).toFixed(3) : '-';
             const kev  = c.in_kev ? '<strong style="color:#c62828">ДА</strong>' : 'НЕТ';
+            const conf = c.confidence ? `<span style="color:#999;font-size:11px">(${c.confidence})</span>` : '';
             return `<tr>
-                <td><a href="https://nvd.nist.gov/vuln/detail/${c.cve_id}" target="_blank">${c.cve_id}</a></td>
+                <td><a href="https://nvd.nist.gov/vuln/detail/${c.cve_id}" target="_blank">${c.cve_id}</a> ${conf}</td>
                 <td>${c.cvss || '-'}</td><td>${epss}</td><td>${kev}</td>
-                <td style="max-width:400px">${c.description || '-'}${cpeHtml}</td>
+                <td style="max-width:420px;font-size:13px">${c.description || '-'}</td>
             </tr>`;
         }).join('');
         body.innerHTML = `<div style="overflow:auto;max-height:60vh">
-            <table style="width:100%;border-collapse:collapse">
-                <thead><tr><th style="text-align:left">CVE</th><th>CVSS</th><th>EPSS</th><th>KEV</th><th>Описание / CPE</th></tr></thead>
+            <table style="width:100%;border-collapse:collapse;font-size:13px">
+                <thead><tr>
+                    <th style="text-align:left;padding:6px">CVE</th>
+                    <th style="padding:6px">CVSS</th>
+                    <th style="padding:6px">EPSS</th>
+                    <th style="padding:6px">KEV</th>
+                    <th style="text-align:left;padding:6px">Описание</th>
+                </tr></thead>
                 <tbody>${rows}</tbody>
             </table></div>`;
-    } catch (err) { body.innerHTML = '<div style="color:#d32f2f">Ошибка: ' + err.message + '</div>'; }
+    } catch (err) { body.innerHTML = `<div style="color:#d32f2f">Ошибка: ${err.message}</div>`; }
 }
 function closeCVEModal() { document.getElementById('cveModal').classList.remove('active'); }
 
@@ -308,14 +362,18 @@ setInterval(refreshSoftware, 60000);
 <!-- Edit modal -->
 <div class="modal" id="editModal">
     <div class="modal-content">
-        <h2>Редактировать ПО</h2>
+        <h2>Редактировать запись</h2>
         <div class="form-group">
-            <label>Название приложения</label>
-            <input type="text" id="origName" disabled style="background:#f5f5f5;">
+            <label>Название</label>
+            <input type="text" id="editName" disabled style="background:#f5f5f5;">
+        </div>
+        <div class="form-group">
+            <label>Версия</label>
+            <input type="text" id="editVersion" disabled style="background:#f5f5f5;">
         </div>
         <div class="form-group">
             <label>Имя для NVD API</label>
-            <input type="text" id="nvdName" placeholder="Имя для отправки в NVD API">
+            <input type="text" id="nvdName" placeholder="Имя для поиска в NVD">
         </div>
         <div class="form-group">
             <label>Статус</label>
@@ -327,7 +385,7 @@ setInterval(refreshSoftware, 60000);
         </div>
         <div class="form-group">
             <label>Комментарий</label>
-            <textarea id="comment" placeholder="Опциональные заметки" rows="3"></textarea>
+            <textarea id="comment" placeholder="Заметки" rows="3"></textarea>
         </div>
         <div class="modal-buttons">
             <button class="btn-save" onclick="saveChanges()">Сохранить</button>
@@ -338,7 +396,7 @@ setInterval(refreshSoftware, 60000);
 
 <!-- CVE modal -->
 <div class="modal" id="cveModal">
-    <div class="modal-content" style="max-width:900px;">
+    <div class="modal-content" style="max-width:960px;">
         <h2 id="cveModalTitle">CVE</h2>
         <div id="cveModalBody">Загружение...</div>
         <div class="modal-buttons">

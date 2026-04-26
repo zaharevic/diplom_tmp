@@ -861,11 +861,8 @@ def find_local_nvd_db():
 
 
 @app.get("/api/package-cves")
-async def package_cves(package_name: str, limit: int = 200):
-    """Return CVEs and CPE matches for a package using the local NVD DB.
-
-    Response includes: cve_id, cvss, description, cpe_matches[], ep_ss, in_kev
-    """
+async def package_cves(package_name: str, version: str = None, limit: int = 200):
+    """Return CVEs for a package (optionally filtered by version) using local NVD DB."""
     if not package_name:
         raise HTTPException(status_code=400, detail="package_name required")
 
@@ -873,66 +870,68 @@ async def package_cves(package_name: str, limit: int = 200):
     if not nvd_db:
         return JSONResponse({"error": "local NVD DB not found"}, status_code=404)
 
-    keywords = get_cpe_keywords(package_name)
-    found_cves = {}
+    # Use version-aware matcher when version is provided
+    if version:
+        from services.matcher import match_package_to_cves
+        raw = match_package_to_cves(package_name, version, nvd_db, limit=limit)
+        found_cves = {r["cve_id"]: {
+            "cve_id":      r["cve_id"],
+            "cvss":        r.get("cvss_score"),
+            "description": r.get("description", ""),
+            "cpe_matches": [r.get("cpe23", "")] if r.get("cpe23") else [],
+            "confidence":  r.get("confidence"),
+            "ep_ss":       0.0,
+            "in_kev":      False,
+        } for r in raw}
+    else:
+        # Fallback: keyword search without version filtering
+        keywords = get_cpe_keywords(package_name)
+        found_cves = {}
+        try:
+            conn = sqlite3.connect(nvd_db)
+            conn.row_factory = sqlite3.Row
+            c = conn.cursor()
+            for kw in keywords:
+                c.execute(
+                    """SELECT DISTINCT cve.id AS id, cve.cvss_score AS cvss,
+                              substr(cve.description,1,1000) AS description
+                       FROM cve JOIN cpe_match ON cve.id = cpe_match.cve_id
+                       WHERE cpe_match.cpe23 LIKE ? LIMIT ?""",
+                    (f"%{kw}%", limit),
+                )
+                for r in c.fetchall():
+                    cid = r["id"].upper()
+                    if cid not in found_cves:
+                        found_cves[cid] = {"cve_id": cid, "cvss": r["cvss"],
+                                           "description": r["description"],
+                                           "cpe_matches": [], "ep_ss": 0.0, "in_kev": False}
+            if found_cves:
+                ids = list(found_cves.keys())
+                ph  = ",".join("?" for _ in ids)
+                for r in c.execute(f"SELECT DISTINCT cve_id, cpe23 FROM cpe_match WHERE cve_id IN ({ph})", ids):
+                    cid = r["cve_id"].upper()
+                    if cid in found_cves:
+                        found_cves[cid]["cpe_matches"].append(r["cpe23"])
+            conn.close()
+        except Exception as e:
+            logger.error(f"Error querying local NVD DB for {package_name}: {e}")
+            return JSONResponse({"error": str(e)}, status_code=500)
 
-    # query local NVD DB for each keyword
-    try:
-        conn = sqlite3.connect(nvd_db)
-        conn.row_factory = sqlite3.Row
-        c = conn.cursor()
-
-        for kw in keywords:
-            like = f"%{kw}%"
-            c.execute(
-                "SELECT DISTINCT cve.id AS id, cve.cvss_score AS cvss, substr(cve.description,1,1000) as description FROM cve JOIN cpe_match ON cve.id = cpe_match.cve_id WHERE cpe_match.cpe23 LIKE ? LIMIT ?",
-                (like, limit),
-            )
-            for r in c.fetchall():
-                cid = r['id'].upper()
-                if cid not in found_cves:
-                    found_cves[cid] = {
-                        'cve_id': cid,
-                        'cvss': r['cvss'],
-                        'description': r['description'],
-                        'cpe_matches': [],
-                        'ep_ss': 0.0,
-                        'in_kev': False,
-                    }
-
-        # collect cpe matches for found CVEs
-        if found_cves:
-            ids = tuple(found_cves.keys())
-            # build parameter placeholders
-            placeholders = ','.join('?' for _ in ids)
-            q = f"SELECT DISTINCT cve_id, cpe23 FROM cpe_match WHERE cve_id IN ({placeholders})"
-            c.execute(q, ids)
-            for r in c.fetchall():
-                cid = r['cve_id'].upper()
-                if cid in found_cves:
-                    found_cves[cid]['cpe_matches'].append(r['cpe23'])
-
-        conn.close()
-    except Exception as e:
-        logger.error(f"Error querying local NVD DB for package {package_name}: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
-
-    # enrich with EPSS/KEV data from app DB (vuln_risk)
+    # Enrich with EPSS/KEV from vuln_risk
     if found_cves:
+        ids = list(found_cves.keys())
+        ph  = ",".join("?" for _ in ids)
         with get_db() as appconn:
-            c2 = appconn.cursor()
-            for cid in list(found_cves.keys()):
-                try:
-                    c2.execute("SELECT ep_ss, in_kev FROM vuln_risk WHERE cve_id = ?", (cid,))
-                    row = c2.fetchone()
-                    if row:
-                        found_cves[cid]['ep_ss'] = row[0] or 0.0
-                        found_cves[cid]['in_kev'] = bool(row[1])
-                except Exception:
-                    continue
+            for row in appconn.execute(
+                f"SELECT cve_id, ep_ss, in_kev FROM vuln_risk WHERE cve_id IN ({ph})", ids
+            ):
+                cid = row[0].upper()
+                if cid in found_cves:
+                    found_cves[cid]["ep_ss"]  = row[1] or 0.0
+                    found_cves[cid]["in_kev"] = bool(row[2])
 
-    results = list(found_cves.values())
-    return JSONResponse({"package": package_name, "keywords": keywords, "cves": results})
+    return JSONResponse({"package": package_name, "version": version,
+                         "cves": list(found_cves.values())})
 
 
 @app.get("/api/check-cves")
@@ -1108,26 +1107,30 @@ async def scan_packages(request: Request):
             f"Vulnerable: {hostname} / {name} {version} — {len(cves)} CVEs, CVSS max={cvss_max:.1f}"
         )
 
-        # Update software_management with latest EPSS/KEV summary
+        # Update software_management with scan results keyed by (name, version)
         try:
             norm = normalize_for_nvd(name) or name
+            ver  = version or ''
             with get_db() as conn2:
                 conn2.execute(
                     """
                     INSERT INTO software_management
-                        (original_name, normalized_for_nvd, status, comment, ep_ss, in_kev, last_checked)
-                    VALUES (?, ?, 'new', '', ?, ?, CURRENT_TIMESTAMP)
-                    ON CONFLICT(original_name) DO UPDATE SET
+                        (original_name, version, normalized_for_nvd, status, comment,
+                         ep_ss, in_kev, cves_found, cvss_max, last_checked)
+                    VALUES (?, ?, ?, 'new', '', ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(original_name, version) DO UPDATE SET
                         ep_ss        = excluded.ep_ss,
                         in_kev       = excluded.in_kev,
+                        cves_found   = excluded.cves_found,
+                        cvss_max     = excluded.cvss_max,
                         last_checked = excluded.last_checked,
                         updated_at   = CURRENT_TIMESTAMP
                     """,
-                    (name, norm, ep_ss_max, 1 if kev_present else 0),
+                    (name, ver, norm, ep_ss_max, 1 if kev_present else 0, len(cves), cvss_max),
                 )
                 conn2.commit()
         except Exception as e:
-            logger.debug(f"software_management upsert failed for {name}: {e}")
+            logger.debug(f"software_management upsert failed for {name} {version}: {e}")
 
     logger.info(f"Scan complete: host={hostname}, checked={checked}, vulnerable={len(vulnerable)}")
 
@@ -1331,142 +1334,131 @@ async def rescan_package(request: Request):
 
 @app.get("/api/software-management")
 async def get_software_management():
-    """Get all unique software with their management status and normalized NVD names."""
+    """Return (name, version) pairs found across all hosts, enriched with management status."""
     with get_db() as conn:
         c = conn.cursor()
         c.execute("""
             SELECT
-                s.name                                      AS original_name,
-                COALESCE(m.normalized_for_nvd, s.name)     AS normalized_for_nvd,
-                COALESCE(m.status, 'new')                   AS status,
+                s.name                                          AS original_name,
+                COALESCE(s.version, '')                        AS version,
+                GROUP_CONCAT(DISTINCT s.hostname)              AS hosts,
+                COALESCE(m.normalized_for_nvd, s.name)        AS normalized_for_nvd,
+                COALESCE(m.status, 'new')                      AS status,
                 m.comment,
-                COALESCE(m.ep_ss, 0.0)                      AS ep_ss,
-                COALESCE(m.in_kev, 0)                       AS in_kev,
+                COALESCE(m.ep_ss, 0.0)                        AS ep_ss,
+                COALESCE(m.in_kev, 0)                         AS in_kev,
+                COALESCE(m.cves_found, 0)                     AS cves_found,
+                COALESCE(m.cvss_max, 0.0)                     AS cvss_max,
                 m.last_checked
-            FROM (SELECT DISTINCT name FROM software) s
-            LEFT JOIN software_management m ON m.original_name = s.name
-            ORDER BY s.name
+            FROM (
+                SELECT DISTINCT name, COALESCE(version, '') AS version, hostname
+                FROM software
+            ) s
+            LEFT JOIN software_management m
+                ON m.original_name = s.name AND m.version = COALESCE(s.version, '')
+            GROUP BY s.name, s.version
+            ORDER BY s.name, s.version
         """)
         rows = c.fetchall()
 
     result = []
     for row in rows:
-        pkg_name = row["original_name"]
-        cached = nvd_client.cache.get_cached_result(pkg_name)
-        normalized = row["normalized_for_nvd"] if row["normalized_for_nvd"] != pkg_name else normalize_for_nvd(pkg_name)
+        hosts_raw = row["hosts"] or ""
         result.append({
-            "original_name": pkg_name,
-            "normalized_for_nvd": normalized,
-            "status": row["status"],
-            "comment": row["comment"],
-            "cves_found": cached.get("cves_found", 0) if cached else 0,
-            "cached": cached is not None,
-            "ep_ss": row["ep_ss"] or 0.0,
-            "in_kev": bool(row["in_kev"]),
-            "last_checked": row["last_checked"],
+            "original_name":    row["original_name"],
+            "version":          row["version"],
+            "hosts":            [h for h in hosts_raw.split(",") if h],
+            "normalized_for_nvd": row["normalized_for_nvd"],
+            "status":           row["status"],
+            "comment":          row["comment"] or "",
+            "ep_ss":            row["ep_ss"] or 0.0,
+            "in_kev":           bool(row["in_kev"]),
+            "cves_found":       row["cves_found"] or 0,
+            "cvss_max":         row["cvss_max"] or 0.0,
+            "last_checked":     row["last_checked"],
         })
 
-    logger.debug(f"Retrieved {len(result)} software packages for management")
+    logger.debug(f"Retrieved {len(result)} (name, version) entries for software management")
     return JSONResponse(result)
 
 
 @app.post("/api/software-management/update")
 async def update_software_management(request: Request):
-    """Update software management settings (status, normalized name)."""
+    """Update management settings for a (name, version) entry."""
     try:
         payload = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
-    
-    original_name = payload.get("original_name")
+
+    original_name     = payload.get("original_name")
+    version           = payload.get("version", "")
     normalized_for_nvd = payload.get("normalized_for_nvd")
-    status = payload.get("status")  # new, in_task, ignore
-    comment = payload.get("comment", "")
-    
+    status            = payload.get("status")
+    comment           = payload.get("comment", "")
+
     if not original_name:
         raise HTTPException(status_code=400, detail="original_name required")
-    
     if status not in ("new", "in_task", "ignore"):
         raise HTTPException(status_code=400, detail="status must be: new, in_task, or ignore")
-    
-    logger.info(f"Software management update: {original_name} -> status={status}, normalized={normalized_for_nvd}")
-    
+
+    if not normalized_for_nvd:
+        normalized_for_nvd = normalize_for_nvd(original_name)
+
     with get_db() as conn:
-        c = conn.cursor()
-        
-        # Insert or update management record
-        if not normalized_for_nvd:
-            normalized_for_nvd = normalize_for_nvd(original_name)
-        
-        c.execute("""
-            INSERT INTO software_management (original_name, normalized_for_nvd, status, comment, updated_at)
-            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(original_name) DO UPDATE SET
-                normalized_for_nvd = ?,
-                status = ?,
-                comment = ?,
-                updated_at = CURRENT_TIMESTAMP
-        """, (original_name, normalized_for_nvd, status, comment, normalized_for_nvd, status, comment))
-        
+        conn.execute("""
+            INSERT INTO software_management
+                (original_name, version, normalized_for_nvd, status, comment, updated_at)
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(original_name, version) DO UPDATE SET
+                normalized_for_nvd = excluded.normalized_for_nvd,
+                status             = excluded.status,
+                comment            = excluded.comment,
+                updated_at         = CURRENT_TIMESTAMP
+        """, (original_name, version, normalized_for_nvd, status, comment))
         conn.commit()
-    
-    return JSONResponse({
-        "success": True,
-        "original_name": original_name,
-        "status": status,
-        "normalized_for_nvd": normalized_for_nvd,
-    })
+
+    return JSONResponse({"success": True, "original_name": original_name,
+                         "version": version, "status": status})
 
 
 @app.post("/api/software-management/bulk-update")
 async def bulk_update_software_management(request: Request):
-    """Bulk update multiple software packages (efficient for large batches)."""
+    """Bulk update multiple (name, version) entries."""
     try:
         payload = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
-    
-    packages = payload.get("packages", [])  # List of {original_name, status, normalized_for_nvd, comment}
-    
+
+    packages = payload.get("packages", [])
     if not isinstance(packages, list) or len(packages) == 0:
         raise HTTPException(status_code=400, detail="packages must be a non-empty list")
-    
-    # Validate all packages before processing
+
     for pkg in packages:
         if not pkg.get("original_name"):
             raise HTTPException(status_code=400, detail="Each package must have original_name")
         if pkg.get("status") not in ("new", "in_task", "ignore"):
             raise HTTPException(status_code=400, detail="Each package status must be: new, in_task, or ignore")
-    
-    logger.info(f"Bulk update requested for {len(packages)} packages")
-    
+
     with get_db() as conn:
-        c = conn.cursor()
-        
         for pkg in packages:
-            original_name = pkg.get("original_name")
-            normalized_for_nvd = pkg.get("normalized_for_nvd") or normalize_for_nvd(original_name)
-            status = pkg.get("status")
+            name    = pkg["original_name"]
+            version = pkg.get("version", "")
+            norm    = pkg.get("normalized_for_nvd") or normalize_for_nvd(name)
+            status  = pkg["status"]
             comment = pkg.get("comment", "")
-            
-            c.execute("""
-                INSERT INTO software_management (original_name, normalized_for_nvd, status, comment, updated_at)
-                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(original_name) DO UPDATE SET
-                    normalized_for_nvd = ?,
-                    status = ?,
-                    comment = ?,
-                    updated_at = CURRENT_TIMESTAMP
-            """, (original_name, normalized_for_nvd, status, comment, normalized_for_nvd, status, comment))
-        
+            conn.execute("""
+                INSERT INTO software_management
+                    (original_name, version, normalized_for_nvd, status, comment, updated_at)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(original_name, version) DO UPDATE SET
+                    normalized_for_nvd = excluded.normalized_for_nvd,
+                    status             = excluded.status,
+                    comment            = excluded.comment,
+                    updated_at         = CURRENT_TIMESTAMP
+            """, (name, version, norm, status, comment))
         conn.commit()
-    
-    logger.debug(f"Bulk update completed for {len(packages)} packages")
-    
-    return JSONResponse({
-        "success": True,
-        "updated_count": len(packages),
-    })
+
+    return JSONResponse({"success": True, "updated_count": len(packages)})
 
 
 @app.post("/api/force-check")
