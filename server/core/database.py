@@ -225,7 +225,7 @@ def _run_migrations(c):
 
     # Fix any legacy invalid status values
     c.execute("UPDATE software_management SET status = 'new' WHERE status IS NULL OR status = ''")
-    c.execute("UPDATE software_management SET status = 'new' WHERE status NOT IN ('new', 'in_task', 'ignore')")
+    c.execute("UPDATE software_management SET status = 'new' WHERE status NOT IN ('new', 'in_task', 'ignore', 'fixed')")
 
 
 def _safe_alter(c, sql: str):

@@ -1540,8 +1540,8 @@ async def update_software_management(request: Request):
 
     if not original_name:
         raise HTTPException(status_code=400, detail="original_name required")
-    if status not in ("new", "in_task", "ignore"):
-        raise HTTPException(status_code=400, detail="status must be: new, in_task, or ignore")
+    if status not in ("new", "in_task", "ignore", "fixed"):
+        raise HTTPException(status_code=400, detail="status must be: new, in_task, ignore, or fixed")
 
     if not normalized_for_nvd:
         normalized_for_nvd = normalize_for_nvd(original_name)
@@ -1612,8 +1612,8 @@ async def bulk_update_software_management(request: Request):
     for pkg in packages:
         if not pkg.get("original_name"):
             raise HTTPException(status_code=400, detail="Each package must have original_name")
-        if pkg.get("status") not in ("new", "in_task", "ignore"):
-            raise HTTPException(status_code=400, detail="Each package status must be: new, in_task, or ignore")
+        if pkg.get("status") not in ("new", "in_task", "ignore", "fixed"):
+            raise HTTPException(status_code=400, detail="Each package status must be: new, in_task, ignore, or fixed")
 
     today_str = date.today().isoformat()
     with get_db() as conn:
@@ -1669,6 +1669,51 @@ async def bulk_update_software_management(request: Request):
         conn.commit()
 
     return JSONResponse({"success": True, "updated_count": len(packages)})
+
+
+@app.post("/api/recheck")
+async def recheck_package(request: Request):
+    """Re-scan a package after a fix. If CVEs drop to 0 — auto-set status to 'fixed'."""
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    original_name = payload.get("original_name")
+    version       = payload.get("version", "") or ""
+    if not original_name:
+        raise HTTPException(status_code=400, detail="original_name required")
+
+    nvd_db = find_local_nvd_db()
+    if not nvd_db:
+        return JSONResponse({"error": "local NVD DB not found"}, status_code=404)
+
+    result = _scan_one(original_name, version, nvd_db)
+    new_status = None
+
+    if result["cves_found"] == 0:
+        # Auto-mark as fixed and record in audit trail
+        with get_db() as conn:
+            old_row = conn.execute(
+                "SELECT status FROM software_management WHERE original_name=? AND version=?",
+                (original_name, version)
+            ).fetchone()
+            old_status = old_row["status"] if old_row else "in_task"
+            conn.execute("""
+                UPDATE software_management
+                SET status='fixed', due_date=NULL, updated_at=CURRENT_TIMESTAMP
+                WHERE original_name=? AND version=?
+            """, (original_name, version))
+            conn.execute(
+                "INSERT INTO status_history (original_name, version, old_status, new_status, comment)"
+                " VALUES (?, ?, ?, 'fixed', 'Автоматически — CVE не обнаружены при перепроверке')",
+                (original_name, version, old_status)
+            )
+            conn.commit()
+        new_status = "fixed"
+
+    logger.info(f"recheck {original_name} {version}: cves={result['cves_found']} → status={new_status or 'unchanged'}")
+    return JSONResponse({**result, "auto_status": new_status})
 
 
 def _scan_one(name: str, version: str, nvd_db: str) -> dict:

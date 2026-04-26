@@ -25,6 +25,7 @@
 .cvss-high   { color:#c62828; font-weight:600; }
 .cvss-medium { color:#e65100; font-weight:600; }
 .cvss-low    { color:#2e7d32; }
+.status-fixed { background:#e8f5e9; color:#1b5e20; }
 .sla-overdue { background:#ffebee; color:#c62828; border-radius:4px; padding:2px 7px;
                font-size:12px; font-weight:600; white-space:nowrap; }
 .sla-ok      { color:#555; font-size:12px; white-space:nowrap; }
@@ -73,6 +74,7 @@
             <button class="filter-btn" onclick="filterByStatus('new', this)">Новое</button>
             <button class="filter-btn" onclick="filterByStatus('in_task', this)">В работе</button>
             <button class="filter-btn" onclick="filterByStatus('ignore', this)">Игнорировано</button>
+            <button class="filter-btn" onclick="filterByStatus('fixed', this)">✅ Исправлено</button>
         </div>
         <div style="display:flex; gap:8px;">
             <button class="btn btn-primary" id="scanAllBtn" onclick="startScanAll()">
@@ -226,6 +228,10 @@ function renderSoftware() {
                             onclick='viewCVEs(${JSON.stringify(sw.original_name)}, ${JSON.stringify(sw.version || "")})'>
                         🔍 CVE
                     </button>
+                    ${sw.status === 'in_task' ? `<button class="btn-small" style="background:#e8f5e9;color:#1b5e20;border-color:#a5d6a7;"
+                            onclick='recheckPackage(${JSON.stringify(sw.original_name)}, ${JSON.stringify(sw.version || "")})'>
+                        🔁 Перепроверить
+                    </button>` : ''}
                     <button class="btn-small"
                             onclick='openEditModal(${JSON.stringify(sw.original_name)}, ${JSON.stringify(sw.version || "")},
                                 ${JSON.stringify(sw.normalized_for_nvd)}, ${JSON.stringify(sw.status)},
@@ -378,6 +384,24 @@ async function forceCheck(packageName, version) {
 
 let _cveModalPkg = null;
 let _cveModalVer = null;
+
+async function recheckPackage(packageName, version) {
+    if (!confirm(`Перепроверить ${packageName} ${version} после исправления?`)) return;
+    try {
+        const resp = await fetch('/api/recheck', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({original_name: packageName, version: version || ''})
+        });
+        const result = await resp.json();
+        if (result.auto_status === 'fixed') {
+            alert(`✅ Уязвимости не найдены — статус автоматически изменён на "Исправлено"`);
+        } else {
+            alert(`⚠️ Всё ещё уязвимо: ${result.cves_found} CVE, макс. CVSS ${(result.cvss_max || 0).toFixed(1)}`);
+        }
+        await refreshSoftware();
+    } catch (err) { alert('❌ Ошибка: ' + err.message); }
+}
 
 async function viewCVEs(packageName, version) {
     _cveModalPkg = packageName;
@@ -558,6 +582,7 @@ setInterval(refreshSoftware, 60000);
                 <option value="new">Новое</option>
                 <option value="in_task">В работе</option>
                 <option value="ignore">Игнорировать</option>
+                <option value="fixed">✅ Исправлено</option>
             </select>
         </div>
         <div class="form-group">
