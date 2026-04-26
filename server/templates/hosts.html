@@ -22,6 +22,18 @@
 .tag-chip.prod { background:#fce4ec; color:#880e4f; }
 .tag-chip.dmz  { background:#f3e5f5; color:#4a148c; }
 .tag-chip.dev  { background:#e8f5e9; color:#1b5e20; }
+
+.ssh-status { padding:3px 7px; border-radius:3px; font-size:11px; font-weight:600; }
+.ssh-status.never      { background:#f5f5f5; color:#9e9e9e; }
+.ssh-status.pending    { background:#fff9c4; color:#f57f17; }
+.ssh-status.processing { background:#e3f2fd; color:#1565c0; }
+.ssh-status.completed  { background:#c8e6c9; color:#2e7d32; }
+.ssh-status.failed     { background:#ffcdd2; color:#c62828; }
+
+.form-group { margin-bottom:14px; }
+.form-group label { display:block; font-size:13px; color:#555; margin-bottom:4px; }
+.form-group input, .form-group select { width:100%; padding:7px 9px; border:1px solid #ddd;
+    border-radius:4px; font-size:13px; box-sizing:border-box; }
 {% endblock %}
 
 {% block content %}
@@ -42,6 +54,7 @@
                 <th>Макс. риск</th>
                 <th>Критичность</th>
                 <th>Теги</th>
+                <th>SSH</th>
                 <th>Действия</th>
             </tr>
         </thead>
@@ -75,15 +88,77 @@
                             style="border:none;background:none;cursor:pointer;font-size:12px;color:#999;padding:0 2px;"
                             title="Редактировать теги">✏️</button>
                 </td>
+                <td style="white-space:nowrap">
+                    <span class="ssh-status never" id="ssh-status-{{ h.hostname }}">—</span>
+                    <button class="btn btn-secondary" style="font-size:11px;padding:3px 7px;margin-top:3px"
+                            onclick="openSSHModal('{{ h.hostname }}')">⚙️ SSH</button>
+                </td>
                 <td>
                     <button class="btn btn-primary" onclick="viewSoftware('{{ h.hostname }}')">Просмотр</button>
                 </td>
             </tr>
             {% else %}
-            <tr><td colspan="11" class="table-empty">Нет хостов</td></tr>
+            <tr><td colspan="12" class="table-empty">Нет хостов</td></tr>
             {% endfor %}
         </tbody>
     </table>
+</div>
+
+<!-- SSH Credentials & Scan Modal -->
+<div class="modal" id="sshModal">
+    <div class="modal-content">
+        <h2>🔐 SSH — <span id="sshModalHost"></span></h2>
+
+        <div style="margin-bottom:16px;padding:10px;background:#f5f5f5;border-radius:6px;font-size:13px">
+            Статус: <span class="ssh-status never" id="sshModalStatus">—</span>
+            <span id="sshModalPkgCount" style="margin-left:8px;color:#555"></span>
+        </div>
+
+        <h3 style="margin-bottom:12px;font-size:15px">Учётные данные</h3>
+        <div class="form-group">
+            <label>Порт</label>
+            <input type="number" id="sshPort" value="22" min="1" max="65535">
+        </div>
+        <div class="form-group">
+            <label>Пользователь</label>
+            <input type="text" id="sshUsername" placeholder="root">
+        </div>
+        <div class="form-group">
+            <label>Тип аутентификации</label>
+            <select id="sshAuthType" onchange="toggleSSHAuthFields()">
+                <option value="password">Пароль</option>
+                <option value="key">SSH-ключ</option>
+            </select>
+        </div>
+        <div class="form-group" id="sshSecretGroup">
+            <label id="sshSecretLabel">Пароль (оставьте пустым, чтобы не менять)</label>
+            <input type="password" id="sshSecret" placeholder="••••••••">
+        </div>
+        <div class="form-group" id="sshKeyPathGroup" style="display:none">
+            <label>Путь к приватному ключу на сервере</label>
+            <input type="text" id="sshKeyPath" placeholder="/data/ssh_keys/id_rsa">
+        </div>
+        <div class="form-group">
+            <label>
+                <input type="checkbox" id="sshUseSudo" style="width:auto;margin-right:6px">
+                Использовать sudo для команд сбора пакетов
+            </label>
+        </div>
+
+        <div class="modal-buttons" style="flex-wrap:wrap;gap:8px">
+            <button class="btn btn-primary" onclick="saveSSHCredentials()">💾 Сохранить credentials</button>
+            <button class="btn btn-secondary" onclick="startSSHScan()"
+                    id="sshScanBtn" style="background:#e8f5e9;color:#2e7d32;border-color:#a5d6a7">
+                ▶ Запустить сканирование
+            </button>
+            <button class="btn btn-secondary" onclick="deleteSSHCredentials()"
+                    style="background:#ffebee;color:#c62828;border-color:#ef9a9a">
+                🗑 Удалить
+            </button>
+            <button class="btn btn-secondary" onclick="closeSSHModal()">Закрыть</button>
+        </div>
+        <div id="sshError" style="margin-top:10px;color:#c62828;font-size:13px"></div>
+    </div>
 </div>
 
 <div class="modal" id="softwareModal">
@@ -194,5 +269,161 @@ async function editTags(hostname) {
 
 pingAllHosts();
 setInterval(pingAllHosts, 5 * 60 * 1000);
+loadAllSSHStatuses();
+
+// ── SSH Modal ───────────────────────────────────────────────────────────────
+
+let _sshCurrentHost = null;
+let _sshPollTimer = null;
+
+async function openSSHModal(hostname) {
+    _sshCurrentHost = hostname;
+    document.getElementById('sshModalHost').textContent = hostname;
+    document.getElementById('sshError').textContent = '';
+    // Reset fields
+    document.getElementById('sshPort').value = 22;
+    document.getElementById('sshUsername').value = '';
+    document.getElementById('sshSecret').value = '';
+    document.getElementById('sshKeyPath').value = '';
+    document.getElementById('sshUseSudo').checked = false;
+    document.getElementById('sshAuthType').value = 'password';
+    toggleSSHAuthFields();
+
+    // Load existing credentials (without secret)
+    try {
+        const r = await fetch('/api/ssh-credentials');
+        const list = await r.json();
+        const cred = list.find(c => c.hostname === hostname);
+        if (cred) {
+            document.getElementById('sshPort').value = cred.port || 22;
+            document.getElementById('sshUsername').value = cred.username || '';
+            document.getElementById('sshAuthType').value = cred.auth_type || 'password';
+            document.getElementById('sshKeyPath').value = cred.key_path || '';
+            document.getElementById('sshUseSudo').checked = !!cred.use_sudo;
+            toggleSSHAuthFields();
+        }
+    } catch {}
+
+    await refreshSSHStatus(hostname, true);
+    document.getElementById('sshModal').classList.add('active');
+}
+
+function closeSSHModal() {
+    document.getElementById('sshModal').classList.remove('active');
+    if (_sshPollTimer) { clearTimeout(_sshPollTimer); _sshPollTimer = null; }
+    _sshCurrentHost = null;
+}
+
+function toggleSSHAuthFields() {
+    const isKey = document.getElementById('sshAuthType').value === 'key';
+    document.getElementById('sshKeyPathGroup').style.display = isKey ? '' : 'none';
+    document.getElementById('sshSecretLabel').textContent = isKey
+        ? 'Passphrase ключа (оставьте пустым, чтобы не менять)'
+        : 'Пароль (оставьте пустым, чтобы не менять)';
+}
+
+async function saveSSHCredentials() {
+    const hostname = _sshCurrentHost;
+    const body = {
+        hostname,
+        port: parseInt(document.getElementById('sshPort').value) || 22,
+        username: document.getElementById('sshUsername').value.trim(),
+        auth_type: document.getElementById('sshAuthType').value,
+        secret: document.getElementById('sshSecret').value,
+        key_path: document.getElementById('sshKeyPath').value.trim(),
+        use_sudo: document.getElementById('sshUseSudo').checked,
+    };
+    if (!body.username) { document.getElementById('sshError').textContent = 'Укажите имя пользователя'; return; }
+    try {
+        const r = await fetch('/api/ssh-credentials', {
+            method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+        });
+        const d = await r.json();
+        if (!r.ok) { document.getElementById('sshError').textContent = d.detail || 'Ошибка'; return; }
+        document.getElementById('sshSecret').value = '';
+        document.getElementById('sshError').textContent = '';
+        alert('Credentials сохранены');
+    } catch (e) { document.getElementById('sshError').textContent = String(e); }
+}
+
+async function deleteSSHCredentials() {
+    if (!confirm('Удалить SSH credentials для ' + _sshCurrentHost + '?')) return;
+    try {
+        await fetch('/api/ssh-credentials/' + encodeURIComponent(_sshCurrentHost), {method: 'DELETE'});
+        closeSSHModal();
+    } catch (e) { document.getElementById('sshError').textContent = String(e); }
+}
+
+async function startSSHScan() {
+    const hostname = _sshCurrentHost;
+    document.getElementById('sshScanBtn').disabled = true;
+    document.getElementById('sshError').textContent = '';
+    try {
+        const r = await fetch('/api/ssh-scan/' + encodeURIComponent(hostname), {method: 'POST'});
+        const d = await r.json();
+        if (!r.ok) {
+            document.getElementById('sshError').textContent = d.detail || 'Ошибка запуска';
+            document.getElementById('sshScanBtn').disabled = false;
+            return;
+        }
+        pollSSHStatus(hostname);
+    } catch (e) {
+        document.getElementById('sshError').textContent = String(e);
+        document.getElementById('sshScanBtn').disabled = false;
+    }
+}
+
+async function refreshSSHStatus(hostname, inModal) {
+    try {
+        const r = await fetch('/api/ssh-scan/status/' + encodeURIComponent(hostname));
+        const d = await r.json();
+        const status = d.status || 'never';
+
+        // Update table badge
+        const badge = document.getElementById('ssh-status-' + hostname);
+        if (badge) {
+            badge.className = 'ssh-status ' + status;
+            const labels = {never:'—', pending:'⏳ ожидание', processing:'🔄 сканирование',
+                            completed:'✓ готово', failed:'✗ ошибка'};
+            badge.textContent = labels[status] || status;
+        }
+
+        if (inModal) {
+            const mb = document.getElementById('sshModalStatus');
+            if (mb) { mb.className = 'ssh-status ' + status; mb.textContent = badge ? badge.textContent : status; }
+            const pc = document.getElementById('sshModalPkgCount');
+            if (pc) pc.textContent = d.total_packages ? d.total_packages + ' пакетов' : '';
+            const btn = document.getElementById('sshScanBtn');
+            if (btn) btn.disabled = (status === 'pending' || status === 'processing');
+
+            if (d.status === 'failed' && d.error_message) {
+                document.getElementById('sshError').textContent = 'Ошибка: ' + d.error_message;
+            }
+        }
+        return status;
+    } catch { return 'never'; }
+}
+
+function pollSSHStatus(hostname) {
+    if (_sshPollTimer) clearTimeout(_sshPollTimer);
+    _sshPollTimer = setTimeout(async () => {
+        const status = await refreshSSHStatus(hostname, hostname === _sshCurrentHost);
+        if (status === 'pending' || status === 'processing') {
+            pollSSHStatus(hostname);
+        } else {
+            document.getElementById('sshScanBtn').disabled = false;
+        }
+    }, 3000);
+}
+
+async function loadAllSSHStatuses() {
+    try {
+        const r = await fetch('/api/ssh-credentials');
+        const list = await r.json();
+        for (const cred of list) {
+            await refreshSSHStatus(cred.hostname, false);
+        }
+    } catch {}
+}
 </script>
 {% endblock %}
