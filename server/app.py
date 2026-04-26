@@ -1834,15 +1834,23 @@ async def get_scan_all_status():
 
 @app.get("/api/export/pdf")
 async def export_pdf():
-    """Generate a PDF vulnerability report using fpdf2."""
+    """Generate a PDF vulnerability report using fpdf2 (Helvetica, Latin-1 safe)."""
     try:
         from fpdf import FPDF
-        from pathlib import Path
-        import fpdf as _fpdf_module
-        _font_path = Path(_fpdf_module.__file__).parent / "fonts" / "DejaVuSansCondensed.ttf"
-        _font_bold  = Path(_fpdf_module.__file__).parent / "fonts" / "DejaVuSansCondensed-Bold.ttf"
     except ImportError:
         raise HTTPException(status_code=500, detail="fpdf2 not installed. Run: pip install fpdf2")
+
+    def _s(text) -> str:
+        """Make any string safe for Helvetica (Latin-1). Strips non-encodable chars."""
+        if not text:
+            return ""
+        text = str(text)
+        # common replacements first
+        for src, dst in [("—", "-"), ("–", "-"), ("’", "'"), ("‘", "'"),
+                         ("“", '"'), ("”", '"'), ("…", "..."), ("×", "x"),
+                         (">=", ">="), ("<=", "<=")]:
+            text = text.replace(src, dst)
+        return text.encode("latin-1", errors="replace").decode("latin-1")
 
     today_str = date.today().isoformat()
 
@@ -1890,22 +1898,16 @@ async def export_pdf():
 
     class VulnReport(FPDF):
         def header(self):
-            if _font_path.exists():
-                self.set_font("dejavu_b", size=10)
-            else:
-                self.set_font("Helvetica", "B", 10)
+            self.set_font("Helvetica", "B", 10)
             self.set_fill_color(102, 126, 234)
             self.set_text_color(255, 255, 255)
-            self.cell(0, 10, "Vulnerability Report — Vuln Collector", fill=True, align="C")
+            self.cell(0, 10, "Vulnerability Report - Vuln Collector", fill=True, align="C")
             self.set_text_color(0, 0, 0)
             self.ln(2)
 
         def footer(self):
             self.set_y(-12)
-            if _font_path.exists():
-                self.set_font("dejavu", size=8)
-            else:
-                self.set_font("Helvetica", size=8)
+            self.set_font("Helvetica", size=8)
             self.set_text_color(150, 150, 150)
             self.cell(0, 10, f"Generated {today_str}  |  Page {self.page_no()}", align="C")
             self.set_text_color(0, 0, 0)
@@ -1913,49 +1915,36 @@ async def export_pdf():
     pdf = VulnReport(orientation="L", unit="mm", format="A4")
     pdf.set_auto_page_break(auto=True, margin=15)
 
-    if _font_path.exists():
-        pdf.add_font("dejavu",   fname=str(_font_path))
-        if _font_bold.exists():
-            pdf.add_font("dejavu_b", fname=str(_font_bold))
-        else:
-            pdf.add_font("dejavu_b", fname=str(_font_path))
-        F_NORMAL = "dejavu"
-        F_BOLD   = "dejavu_b"
-    else:
-        F_NORMAL = "Helvetica"
-        F_BOLD   = "Helvetica"
-
     # ── Page 1: Summary ─────────────────────────────────────────────
     pdf.add_page()
-    pdf.set_font(F_BOLD, size=16)
+    pdf.set_font("Helvetica", "B", 16)
     pdf.ln(4)
-    pdf.cell(0, 12, "Отчёт об уязвимостях", align="C")
+    pdf.cell(0, 12, "Vulnerability Report", align="C")
     pdf.ln(6)
-    pdf.set_font(F_NORMAL, size=11)
-    pdf.cell(0, 8, f"Дата формирования: {today_str}", align="C")
+    pdf.set_font("Helvetica", size=11)
+    pdf.cell(0, 8, f"Date: {today_str}", align="C")
     pdf.ln(12)
 
     def summary_box(label, value, fill_rgb=(240, 240, 240)):
         pdf.set_fill_color(*fill_rgb)
-        pdf.set_font(F_NORMAL, size=9)
+        pdf.set_font("Helvetica", size=9)
         pdf.cell(52, 8, label, border=1, fill=True)
-        pdf.set_font(F_BOLD, size=9)
+        pdf.set_font("Helvetica", "B", 9)
         pdf.cell(28, 8, str(value), border=1, fill=True, align="C")
-        pdf.set_fill_color(240, 240, 240)
 
-    pdf.set_font(F_BOLD, size=11)
-    pdf.cell(0, 8, "Сводка")
+    pdf.set_font("Helvetica", "B", 11)
+    pdf.cell(0, 8, "Summary")
     pdf.ln(9)
 
     rows_pairs = [
-        ("Всего хостов",            hosts_cnt,    (235,245,255)),
-        ("Всего пакетов",           total_pkgs,   (235,245,255)),
-        ("Уязвимых пакетов",        vuln_pkgs,    (255,235,235)),
-        ("Критических (CVSS≥9)",    critical_cnt, (255,200,200)),
-        ("Высоких (CVSS 7–9)",      high_cnt,     (255,220,180)),
-        ("В работе",                in_task_cnt,  (255,245,210)),
-        ("Просрочено SLA",          overdue_cnt,  (255,200,200)),
-        ("Исправлено",              fixed_cnt,    (210,240,215)),
+        ("Total Hosts",           hosts_cnt,    (235,245,255)),
+        ("Total Packages",        total_pkgs,   (235,245,255)),
+        ("Vulnerable Packages",   vuln_pkgs,    (255,235,235)),
+        ("Critical (CVSS >= 9)",  critical_cnt, (255,200,200)),
+        ("High (CVSS 7-9)",       high_cnt,     (255,220,180)),
+        ("In Progress",           in_task_cnt,  (255,245,210)),
+        ("SLA Overdue",           overdue_cnt,  (255,200,200)),
+        ("Fixed",                 fixed_cnt,    (210,240,215)),
     ]
     for label, val, color in rows_pairs:
         summary_box(label, val, color)
@@ -1963,25 +1952,25 @@ async def export_pdf():
 
     # ── Page 2+: Vulnerable packages table ──────────────────────────
     pdf.add_page()
-    pdf.set_font(F_BOLD, size=11)
-    pdf.cell(0, 8, f"Уязвимые пакеты (топ {min(len(pkg_rows),100)} по CVSS)")
+    pdf.set_font("Helvetica", "B", 11)
+    pdf.cell(0, 8, f"Vulnerable Packages (top {min(len(pkg_rows),100)} by CVSS)")
     pdf.ln(9)
 
     col_w = [62, 22, 16, 18, 16, 14, 22, 28]
-    headers = ["Название", "Версия", "CVE", "CVSS", "EPSS", "KEV", "Статус", "SLA дедлайн"]
+    headers = ["Name", "Version", "CVEs", "CVSS", "EPSS", "KEV", "Status", "SLA Due"]
     pdf.set_fill_color(102, 126, 234)
     pdf.set_text_color(255, 255, 255)
-    pdf.set_font(F_BOLD, size=8)
+    pdf.set_font("Helvetica", "B", 8)
     for w, h in zip(col_w, headers):
         pdf.cell(w, 7, h, border=1, fill=True, align="C")
     pdf.ln()
     pdf.set_text_color(0, 0, 0)
 
-    status_labels = {"new": "Новое", "in_task": "В работе", "ignore": "Игнор", "fixed": "Исправлено"}
+    status_labels = {"new": "New", "in_task": "In Progress", "ignore": "Ignored", "fixed": "Fixed"}
     for i, row in enumerate(pkg_rows):
         fill = (i % 2 == 0)
         pdf.set_fill_color(248, 248, 255) if fill else pdf.set_fill_color(255, 255, 255)
-        pdf.set_font(F_NORMAL, size=7)
+        pdf.set_font("Helvetica", size=7)
         cvss = row["cvss_max"] or 0
         if cvss >= 9:
             pdf.set_text_color(180, 0, 0)
@@ -1990,14 +1979,14 @@ async def export_pdf():
         else:
             pdf.set_text_color(0, 0, 0)
         vals = [
-            str(row["original_name"] or "")[:30],
-            str(row["version"] or "")[:10],
+            _s(row["original_name"] or "")[:30],
+            _s(row["version"] or "")[:10],
             str(row["cves_found"] or 0),
             f"{cvss:.1f}",
             f"{row['ep_ss']:.3f}" if row["ep_ss"] else "0.000",
-            "ДА" if row["in_kev"] else "НЕТ",
-            status_labels.get(row["status"], row["status"] or ""),
-            str(row["due_date"] or ""),
+            "YES" if row["in_kev"] else "NO",
+            status_labels.get(row["status"], _s(row["status"] or "")),
+            _s(row["due_date"] or ""),
         ]
         for w, v in zip(col_w, vals):
             pdf.cell(w, 6, v, border=1, fill=fill, align="C" if w <= 22 else "L")
@@ -2007,14 +1996,14 @@ async def export_pdf():
     # ── Top CVEs section ────────────────────────────────────────────
     if top_cves:
         pdf.ln(4)
-        pdf.set_font(F_BOLD, size=11)
-        pdf.cell(0, 8, "Топ-10 CVE по риску")
+        pdf.set_font("Helvetica", "B", 11)
+        pdf.cell(0, 8, "Top 10 CVEs by Risk Score")
         pdf.ln(9)
         cve_col_w = [40, 20, 20, 16, 20, 151]
-        cve_hdrs  = ["CVE ID", "Риск", "CVSS", "KEV", "EPSS", "Описание"]
+        cve_hdrs  = ["CVE ID", "Risk", "CVSS", "KEV", "EPSS", "Description"]
         pdf.set_fill_color(102, 126, 234)
         pdf.set_text_color(255, 255, 255)
-        pdf.set_font(F_BOLD, size=8)
+        pdf.set_font("Helvetica", "B", 8)
         for w, h in zip(cve_col_w, cve_hdrs):
             pdf.cell(w, 7, h, border=1, fill=True, align="C")
         pdf.ln()
@@ -2022,14 +2011,14 @@ async def export_pdf():
         for i, row in enumerate(top_cves):
             fill = (i % 2 == 0)
             pdf.set_fill_color(248, 248, 255) if fill else pdf.set_fill_color(255, 255, 255)
-            pdf.set_font(F_NORMAL, size=7)
+            pdf.set_font("Helvetica", size=7)
             cve_vals = [
-                str(row["cve_id"] or ""),
+                _s(row["cve_id"] or ""),
                 f"{row['risk_score']:.2f}" if row["risk_score"] else "0.00",
-                f"{row['cvss_score']:.1f}" if row["cvss_score"] else "—",
-                "ДА" if row["in_kev"] else "НЕТ",
+                f"{row['cvss_score']:.1f}" if row["cvss_score"] else "-",
+                "YES" if row["in_kev"] else "NO",
                 f"{row['ep_ss']:.3f}" if row["ep_ss"] else "0.000",
-                str(row["description"] or "")[:90],
+                _s(row["description"] or "")[:90],
             ]
             for w, v in zip(cve_col_w, cve_vals):
                 pdf.cell(w, 6, v, border=1, fill=fill)
