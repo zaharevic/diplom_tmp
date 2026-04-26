@@ -1534,6 +1534,13 @@ async def update_software_management(request: Request):
             due_date_val = (date.today() + timedelta(days=days)).isoformat()
 
     with get_db() as conn:
+        # Read old status before update for audit trail
+        old_row = conn.execute(
+            "SELECT status FROM software_management WHERE original_name=? AND version=?",
+            (original_name, version)
+        ).fetchone()
+        old_status = old_row["status"] if old_row else None
+
         conn.execute("""
             INSERT INTO software_management
                 (original_name, version, normalized_for_nvd, status, comment, due_date, updated_at)
@@ -1547,6 +1554,13 @@ async def update_software_management(request: Request):
                                           ELSE NULL END,
                 updated_at         = CURRENT_TIMESTAMP
         """, (original_name, version, normalized_for_nvd, status, comment, due_date_val))
+
+        if old_status != status:
+            conn.execute(
+                "INSERT INTO status_history (original_name, version, old_status, new_status, comment)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (original_name, version, old_status, status, comment)
+            )
         conn.commit()
 
     return JSONResponse({"success": True, "original_name": original_name,
@@ -1573,17 +1587,15 @@ async def bulk_update_software_management(request: Request):
 
     today_str = date.today().isoformat()
     with get_db() as conn:
-        # Pre-fetch existing cvss_max + due_date for all in_task entries in one query
-        names_versions = [(pkg["original_name"], pkg.get("version", ""))
-                          for pkg in packages if pkg["status"] == "in_task"]
+        # Pre-fetch existing status + cvss_max + due_date for all packages
+        all_keys = [(pkg["original_name"], pkg.get("version", "")) for pkg in packages]
         existing_map = {}
-        if names_versions:
-            for n, v in names_versions:
-                row = conn.execute(
-                    "SELECT cvss_max, due_date FROM software_management WHERE original_name=? AND version=?",
-                    (n, v)
-                ).fetchone()
-                existing_map[(n, v)] = row
+        for n, v in all_keys:
+            row = conn.execute(
+                "SELECT status, cvss_max, due_date FROM software_management WHERE original_name=? AND version=?",
+                (n, v)
+            ).fetchone()
+            existing_map[(n, v)] = row
 
         for pkg in packages:
             name    = pkg["original_name"]
@@ -1591,15 +1603,16 @@ async def bulk_update_software_management(request: Request):
             norm    = pkg.get("normalized_for_nvd") or normalize_for_nvd(name)
             status  = pkg["status"]
             comment = pkg.get("comment", "")
+            old_row = existing_map.get((name, version))
+            old_status = old_row["status"] if old_row else None
 
             due_date_val = None
             if status == "in_task":
-                row = existing_map.get((name, version))
-                existing_due = row["due_date"] if row else None
+                existing_due = old_row["due_date"] if old_row else None
                 if existing_due:
                     due_date_val = existing_due
                 else:
-                    cvss = float(row["cvss_max"] or 0.0) if row else 0.0
+                    cvss = float(old_row["cvss_max"] or 0.0) if old_row else 0.0
                     days = sla_days_for_cvss(cvss)
                     due_date_val = (date.today() + timedelta(days=days)).isoformat()
 
@@ -1616,6 +1629,13 @@ async def bulk_update_software_management(request: Request):
                                               ELSE NULL END,
                     updated_at         = CURRENT_TIMESTAMP
             """, (name, version, norm, status, comment, due_date_val))
+
+            if old_status != status:
+                conn.execute(
+                    "INSERT INTO status_history (original_name, version, old_status, new_status, comment)"
+                    " VALUES (?, ?, ?, ?, ?)",
+                    (name, version, old_status, status, comment)
+                )
         conn.commit()
 
     return JSONResponse({"success": True, "updated_count": len(packages)})
@@ -1880,6 +1900,19 @@ async def remove_vuln_exception(request: Request):
         conn.commit()
 
     return JSONResponse({"ok": True})
+
+
+@app.get("/api/status-history")
+async def get_status_history(original_name: str, version: str = ""):
+    """Return status change history for a (name, version) pair."""
+    with get_db() as conn:
+        rows = conn.execute("""
+            SELECT old_status, new_status, comment, changed_at
+            FROM status_history
+            WHERE original_name=? AND version=?
+            ORDER BY changed_at DESC LIMIT 50
+        """, (original_name, version)).fetchall()
+    return JSONResponse([dict(r) for r in rows])
 
 
 @app.post("/api/snapshots/take")

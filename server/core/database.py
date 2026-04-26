@@ -138,6 +138,19 @@ def _create_tables(c):
     c.execute("CREATE INDEX IF NOT EXISTS idx_vuln_exceptions_pkg ON vuln_exceptions(original_name, version)")
 
     c.execute("""
+        CREATE TABLE IF NOT EXISTS status_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            original_name TEXT NOT NULL,
+            version TEXT NOT NULL DEFAULT '',
+            old_status TEXT,
+            new_status TEXT NOT NULL,
+            comment TEXT,
+            changed_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_status_history_pkg ON status_history(original_name, version)")
+
+    c.execute("""
         CREATE TABLE IF NOT EXISTS vulnerability_snapshots (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             snapshot_date TEXT NOT NULL UNIQUE,

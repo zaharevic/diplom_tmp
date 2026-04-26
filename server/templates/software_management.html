@@ -308,13 +308,37 @@ function filterByStatus(status, btn) {
     renderSoftware();
 }
 
-function openEditModal(name, version, nvd, status, comment) {
+async function openEditModal(name, version, nvd, status, comment) {
     document.getElementById('editName').value = name;
     document.getElementById('editVersion').value = version;
     document.getElementById('nvdName').value = nvd;
     document.getElementById('statusSelect').value = status;
     document.getElementById('comment').value = comment;
+    document.getElementById('historyBody').textContent = 'Загружение...';
     document.getElementById('editModal').classList.add('active');
+
+    try {
+        const url = `/api/status-history?original_name=${encodeURIComponent(name)}&version=${encodeURIComponent(version || '')}`;
+        const resp = await fetch(url);
+        const rows = await resp.json();
+        if (!rows.length) {
+            document.getElementById('historyBody').textContent = 'Нет изменений';
+            return;
+        }
+        const statusLabel = {new: 'Новое', in_task: 'В работе', ignore: 'Игнор', null: '—'};
+        document.getElementById('historyBody').innerHTML = rows.map(r =>
+            `<div style="padding:3px 0;border-bottom:1px solid #f0f0f0;">
+                <span style="color:#999">${r.changed_at.slice(0,16)}</span>
+                &nbsp;
+                <span>${statusLabel[r.old_status] || r.old_status || '—'}</span>
+                &nbsp;→&nbsp;
+                <strong>${statusLabel[r.new_status] || r.new_status}</strong>
+                ${r.comment ? `<span style="color:#999;margin-left:8px">${r.comment}</span>` : ''}
+            </div>`
+        ).join('');
+    } catch {
+        document.getElementById('historyBody').textContent = 'Ошибка загрузки';
+    }
 }
 function closeEditModal() { document.getElementById('editModal').classList.remove('active'); }
 
@@ -543,6 +567,10 @@ setInterval(refreshSoftware, 60000);
         <div class="modal-buttons">
             <button class="btn-save" onclick="saveChanges()">Сохранить</button>
             <button class="btn-cancel" onclick="closeEditModal()">Отмена</button>
+        </div>
+        <div id="historySection" style="margin-top:18px;border-top:1px solid #eee;padding-top:12px;">
+            <div style="font-weight:600;font-size:13px;color:#555;margin-bottom:8px;">История изменений</div>
+            <div id="historyBody" style="font-size:12px;color:#666;">—</div>
         </div>
     </div>
 </div>
