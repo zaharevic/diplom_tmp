@@ -2359,6 +2359,197 @@ async def update_scan_queue(request: Request):
 
 
 # ---------------------------------------------------------------------------
+# SSH Scanning
+# ---------------------------------------------------------------------------
+
+# Track running SSH scans per hostname to prevent duplicates
+_ssh_scan_running: set[str] = set()
+_ssh_scan_lock = threading.Lock()
+
+
+def _load_ssh_creds(hostname: str) -> dict:
+    """Load and decrypt SSH credentials for hostname. Raises HTTPException if not found."""
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM ssh_credentials WHERE hostname=?", (hostname,)
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"No SSH credentials for {hostname}")
+    creds = dict(row)
+    if creds.get("encrypted_secret"):
+        try:
+            creds["secret"] = _decrypt_secret(creds["encrypted_secret"])
+        except Exception:
+            creds["secret"] = ""
+    else:
+        creds["secret"] = ""
+    return creds
+
+
+def _save_ssh_report(hostname: str, packages: list[dict], os_family: str) -> int:
+    """Save SSH-collected packages as a report + software rows. Returns report_id."""
+    now = datetime.now(timezone.utc).isoformat()
+    payload = {
+        "hostname": hostname,
+        "ip": "",
+        "os": f"ssh-detected/{os_family}",
+        "collected_at": now,
+        "software": packages,
+        "source": "ssh",
+    }
+    with get_db() as conn:
+        c = conn.cursor()
+        c.execute(
+            "INSERT INTO reports (hostname, ip, os, collected_at, raw_json) VALUES (?,?,?,?,?)",
+            (hostname, "", payload["os"], now, json.dumps(payload, ensure_ascii=False)),
+        )
+        report_id = c.lastrowid
+
+        for pkg in packages:
+            name = (pkg.get("name") or "").strip()
+            version = pkg.get("version") or ""
+            if not name:
+                continue
+            c.execute(
+                "INSERT INTO software (report_id, hostname, name, version) VALUES (?,?,?,?)",
+                (report_id, hostname, name, version),
+            )
+
+        # Upsert host row
+        c.execute(
+            """INSERT INTO hosts (host, created_at, updated_at)
+               VALUES (?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+               ON CONFLICT(host) DO UPDATE SET updated_at=CURRENT_TIMESTAMP""",
+            (hostname,),
+        )
+        conn.commit()
+
+    return report_id
+
+
+def _run_ssh_scan_bg(hostname: str, scan_id: int):
+    """Background thread: SSH-scan a host, save packages, trigger CVE scan."""
+    from core.ssh_scanner import scan_host, SSHScanError
+
+    def _fail(msg: str):
+        logger.error(f"[ssh-scan] {hostname}: {msg}")
+        with get_db() as conn:
+            conn.execute(
+                "UPDATE scan_queue SET status='failed', completed_at=CURRENT_TIMESTAMP, error_message=? WHERE id=?",
+                (msg[:500], scan_id),
+            )
+            conn.commit()
+        with _ssh_scan_lock:
+            _ssh_scan_running.discard(hostname)
+
+    try:
+        creds = _load_ssh_creds(hostname)
+    except HTTPException as e:
+        _fail(e.detail)
+        return
+
+    # Mark as processing
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE scan_queue SET status='processing', started_at=CURRENT_TIMESTAMP WHERE id=?",
+            (scan_id,),
+        )
+        conn.commit()
+
+    try:
+        packages = scan_host(
+            hostname=creds["hostname"],
+            port=creds["port"],
+            username=creds["username"],
+            password=creds["secret"] if creds["auth_type"] == "password" else None,
+            key_path=creds["key_path"] or None,
+            key_passphrase=creds["secret"] if creds["auth_type"] == "key" else None,
+            use_sudo=bool(creds["use_sudo"]),
+        )
+    except SSHScanError as e:
+        _fail(str(e))
+        return
+    except Exception as e:
+        _fail(f"Unexpected error: {e}")
+        return
+
+    # Detect os_family from packages list length as proxy (already returned from scan_host)
+    # We store it from the SSHScanError path; here we just note "ssh"
+    report_id = _save_ssh_report(hostname, packages, "ssh")
+
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE scan_queue SET status='completed', completed_at=CURRENT_TIMESTAMP, "
+            "total_packages=?, checked_packages=?, report_id=? WHERE id=?",
+            (len(packages), len(packages), report_id, scan_id),
+        )
+        conn.commit()
+
+    logger.info(f"[ssh-scan] {hostname}: saved {len(packages)} packages (report_id={report_id})")
+
+    # Kick off CVE scan for newly discovered packages
+    nvd_db = find_local_nvd_db()
+    if nvd_db:
+        errors = 0
+        for pkg in packages:
+            name = (pkg.get("name") or "").strip()
+            version = pkg.get("version") or ""
+            if not name:
+                continue
+            try:
+                _scan_one(name, version, nvd_db)
+            except Exception as e:
+                errors += 1
+                logger.debug(f"[ssh-scan] CVE scan error {name}: {e}")
+        logger.info(f"[ssh-scan] {hostname}: CVE scan done, {errors} errors")
+
+    with _ssh_scan_lock:
+        _ssh_scan_running.discard(hostname)
+
+
+@app.post("/api/ssh-scan/{hostname}")
+async def start_ssh_scan(hostname: str):
+    """Start an SSH-based package scan for a host."""
+    with _ssh_scan_lock:
+        if hostname in _ssh_scan_running:
+            return JSONResponse({"ok": False, "detail": "Scan already running for this host"}, status_code=409)
+        _ssh_scan_running.add(hostname)
+
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO scan_queue (hostname, status, created_at) VALUES (?, 'pending', CURRENT_TIMESTAMP)",
+            (hostname,),
+        )
+        conn.commit()
+        scan_id = conn.execute(
+            "SELECT id FROM scan_queue WHERE hostname=? ORDER BY id DESC LIMIT 1", (hostname,)
+        ).fetchone()["id"]
+
+    threading.Thread(target=_run_ssh_scan_bg, args=(hostname, scan_id), daemon=True).start()
+    logger.info(f"[ssh-scan] started for {hostname} (scan_id={scan_id})")
+    return JSONResponse({"ok": True, "scan_id": scan_id, "hostname": hostname})
+
+
+@app.get("/api/ssh-scan/status/{hostname}")
+async def ssh_scan_status(hostname: str):
+    """Return the latest SSH scan status for a hostname."""
+    with get_db() as conn:
+        row = conn.execute(
+            """SELECT id, status, started_at, completed_at,
+                      total_packages, error_message, created_at
+               FROM scan_queue WHERE hostname=?
+               ORDER BY id DESC LIMIT 1""",
+            (hostname,),
+        ).fetchone()
+    if not row:
+        return JSONResponse({"status": "never"})
+    result = dict(row)
+    with _ssh_scan_lock:
+        result["running"] = hostname in _ssh_scan_running
+    return JSONResponse(result)
+
+
+# ---------------------------------------------------------------------------
 # SSH Credentials helpers
 # ---------------------------------------------------------------------------
 
