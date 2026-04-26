@@ -1717,10 +1717,10 @@ async def export_csv(filter: str = "all"):
         ])
 
     filename = f'vuln_report_{filter}_{date.today().isoformat()}.csv'
-    output.seek(0)
+    csv_bytes = output.getvalue().encode("utf-8-sig")
     return StreamingResponse(
-        iter([output.getvalue()]),
-        media_type="text/csv; charset=utf-8-sig",
+        iter([csv_bytes]),
+        media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
