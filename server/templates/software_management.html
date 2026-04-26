@@ -74,9 +74,14 @@
             <button class="filter-btn" onclick="filterByStatus('in_task', this)">В работе</button>
             <button class="filter-btn" onclick="filterByStatus('ignore', this)">Игнорировано</button>
         </div>
-        <button class="btn btn-primary" id="scanAllBtn" onclick="startScanAll()">
-            🔍 Сканировать всё
-        </button>
+        <div style="display:flex; gap:8px;">
+            <button class="btn btn-primary" id="scanAllBtn" onclick="startScanAll()">
+                🔍 Сканировать всё
+            </button>
+            <button class="btn btn-secondary" onclick="exportCSV()">
+                ⬇️ CSV
+            </button>
+        </div>
     </div>
 
     <div id="scanAllProgress" style="display:none; margin-bottom:16px;">
@@ -387,6 +392,11 @@ async function viewCVEs(packageName, version) {
 function closeCVEModal() { document.getElementById('cveModal').classList.remove('active'); }
 
 async function refreshSoftware() { await loadSoftwareData(); renderSoftware(); }
+
+function exportCSV() {
+    const filter = currentFilter === 'all' ? 'all' : currentFilter;
+    window.location.href = `/api/export/csv?filter=${filter}`;
+}
 
 // ── Scan-all ──────────────────────────────────────────────────────
 let _scanPollInterval = null;

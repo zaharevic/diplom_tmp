@@ -1,5 +1,7 @@
 from fastapi import FastAPI, Request, HTTPException, Response
-from fastapi.responses import JSONResponse, RedirectResponse, HTMLResponse
+from fastapi.responses import JSONResponse, RedirectResponse, HTMLResponse, StreamingResponse
+import csv
+import io
 from fastapi.templating import Jinja2Templates
 import uvicorn
 import os
@@ -1644,6 +1646,83 @@ async def scan_all_software():
 async def get_scan_all_status():
     with scan_all_state_lock:
         return JSONResponse(dict(scan_all_state))
+
+
+@app.get("/api/export/csv")
+async def export_csv(filter: str = "all"):
+    """Export software management data as CSV.
+
+    Query param: filter = all | new | in_task | ignore
+    """
+    valid_filters = {"all", "new", "in_task", "ignore"}
+    if filter not in valid_filters:
+        raise HTTPException(status_code=400, detail=f"filter must be one of: {', '.join(valid_filters)}")
+
+    today = date.today().isoformat()
+
+    with get_db() as conn:
+        query = """
+            SELECT
+                s.name                                      AS original_name,
+                COALESCE(s.version, '')                    AS version,
+                GROUP_CONCAT(DISTINCT s.hostname)          AS hosts,
+                COALESCE(m.normalized_for_nvd, s.name)    AS normalized_for_nvd,
+                COALESCE(m.status, 'new')                  AS status,
+                COALESCE(m.comment, '')                    AS comment,
+                COALESCE(m.ep_ss, 0.0)                    AS ep_ss,
+                COALESCE(m.in_kev, 0)                     AS in_kev,
+                COALESCE(m.cves_found, 0)                 AS cves_found,
+                COALESCE(m.cvss_max, 0.0)                 AS cvss_max,
+                m.last_checked,
+                m.due_date
+            FROM (
+                SELECT DISTINCT name, COALESCE(version, '') AS version, hostname
+                FROM software
+            ) s
+            LEFT JOIN software_management m
+                ON m.original_name = s.name AND m.version = COALESCE(s.version, '')
+        """
+        params = []
+        if filter != "all":
+            query += " WHERE COALESCE(m.status, 'new') = ?"
+            params.append(filter)
+        query += " GROUP BY s.name, s.version ORDER BY s.name, s.version"
+
+        rows = conn.execute(query, params).fetchall()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "Название", "Версия", "Хосты", "Имя для NVD",
+        "Статус", "CVE", "CVSS макс.", "EPSS", "KEV",
+        "Последняя проверка", "Дедлайн SLA", "Просрочено", "Комментарий"
+    ])
+    for row in rows:
+        due = row["due_date"]
+        is_overdue = "Да" if (due and row["status"] == "in_task" and due < today) else "Нет"
+        writer.writerow([
+            row["original_name"],
+            row["version"],
+            row["hosts"] or "",
+            row["normalized_for_nvd"],
+            row["status"],
+            row["cves_found"],
+            f'{row["cvss_max"]:.1f}' if row["cvss_max"] else "0.0",
+            f'{row["ep_ss"]:.3f}' if row["ep_ss"] else "0.000",
+            "Да" if row["in_kev"] else "Нет",
+            row["last_checked"] or "",
+            due or "",
+            is_overdue,
+            row["comment"],
+        ])
+
+    filename = f'vuln_report_{filter}_{date.today().isoformat()}.csv'
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv; charset=utf-8-sig",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.get("/api/scan-queue")
