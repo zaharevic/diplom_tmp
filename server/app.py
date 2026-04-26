@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Request, HTTPException, Response
 from fastapi.responses import JSONResponse, RedirectResponse, HTMLResponse
+from fastapi.templating import Jinja2Templates
 import uvicorn
 import os
 import json
@@ -29,10 +30,7 @@ from nvd import (
     get_cpe_keywords,
 )
 from auth import create_session, is_session_valid, invalidate_session, verify_password
-from pages import (
-    get_login_page, get_dashboard_page, get_hosts_page,
-    get_packages_page, get_software_management_page
-)
+from pages import get_login_page
 from core.database import get_db, init_db, DB_PATH
 from core.utils import find_script
 from services.matcher import match_package_to_cves
@@ -44,6 +42,7 @@ if NVD_LOG:
     logger.info("NVD API logging enabled - detailed statistics will be printed")
 
 app = FastAPI()
+templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "templates"))
 
 # List of public routes (no authentication required)
 PUBLIC_ROUTES = {"/login", "/api/collect"}
@@ -409,31 +408,113 @@ async def root():
     return RedirectResponse(url="/dashboard", status_code=302)
 
 
-@app.get("/dashboard", response_class=HTMLResponse)
-async def dashboard():
-    """Render dashboard page."""
-    return get_dashboard_page()
+@app.get("/dashboard")
+async def dashboard(request: Request):
+    with get_db() as conn:
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM reports")
+        reports_count = c.fetchone()[0]
+        c.execute("SELECT COUNT(DISTINCT hostname || '|' || name || '|' || version) FROM software")
+        software_count = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM cve_cache WHERE cves_found > 0")
+        vulnerable_count = c.fetchone()[0]
+        c.execute("SELECT COUNT(DISTINCT hostname) FROM reports")
+        hosts_count = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM software_management WHERE status = 'new'")
+        new_count = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM software_management WHERE status = 'in_task'")
+        in_task_count = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM software_management WHERE status = 'ignore'")
+        ignore_count = c.fetchone()[0]
+        c.execute("""SELECT id, hostname, ip, os, received_at FROM reports
+                     WHERE id IN (SELECT MAX(id) FROM reports GROUP BY hostname)
+                     ORDER BY received_at DESC LIMIT 10""")
+        recent_reports = [dict(row) for row in c.fetchall()]
+        c.execute("""SELECT package_name, cves_found, cvss_max FROM cve_cache
+                     WHERE cves_found > 0 ORDER BY cves_found DESC LIMIT 10""")
+        vulnerable_packages = [dict(row) for row in c.fetchall()]
+
+    return templates.TemplateResponse("dashboard.html", {
+        "request": request,
+        "active_page": "dashboard",
+        "stats": {
+            "reports_count": reports_count,
+            "hosts_count": hosts_count,
+            "software_count": software_count,
+            "vulnerable_count": vulnerable_count,
+            "new_count": new_count,
+            "in_task_count": in_task_count,
+            "ignore_count": ignore_count,
+        },
+        "recent_reports": recent_reports,
+        "vulnerable_packages": vulnerable_packages,
+    })
 
 
-@app.get("/hosts", response_class=HTMLResponse)
-async def hosts_page():
-    """Render hosts management page."""
-    return get_hosts_page()
+@app.get("/hosts")
+async def hosts_page(request: Request):
+    with get_db() as conn:
+        c = conn.cursor()
+        c.execute("""
+            SELECT h.hostname,
+                   r.ip, r.os, r.received_at,
+                   IFNULL(s.software_count, 0) AS software_count,
+                   IFNULL(hm.criticality, 1)   AS criticality,
+                   IFNULL(vr.risky_count, 0)    AS risky_count,
+                   IFNULL(vr.top_risk,   0.0)   AS top_risk
+            FROM (
+                SELECT hostname FROM reports
+                UNION SELECT hostname FROM software
+                UNION SELECT host AS hostname FROM hosts
+            ) h
+            LEFT JOIN (
+                SELECT * FROM reports
+                WHERE id IN (SELECT MAX(id) FROM reports GROUP BY hostname)
+            ) r ON r.hostname = h.hostname
+            LEFT JOIN (
+                SELECT hostname, COUNT(*) AS software_count FROM software GROUP BY hostname
+            ) s ON s.hostname = h.hostname
+            LEFT JOIN hosts hm ON hm.host = h.hostname
+            LEFT JOIN (
+                SELECT host,
+                       COUNT(*) AS risky_count,
+                       MAX(risk_score) AS top_risk
+                FROM vuln_risk_host
+                WHERE risk_score > 0
+                GROUP BY host
+            ) vr ON vr.host = h.hostname
+            ORDER BY h.hostname
+        """)
+        hosts = [dict(row) for row in c.fetchall()]
+
+    return templates.TemplateResponse("hosts.html", {
+        "request": request,
+        "active_page": "hosts",
+        "hosts": hosts,
+    })
 
 
-@app.get("/packages", response_class=HTMLResponse)
-async def packages_page():
-    """Render package selection page."""
-    return get_packages_page()
+@app.get("/packages")
+async def packages_page(request: Request):
+    with get_db() as conn:
+        c = conn.cursor()
+        c.execute("SELECT DISTINCT hostname FROM reports ORDER BY hostname")
+        hostnames = [row[0] for row in c.fetchall()]
+
+    return templates.TemplateResponse("packages.html", {
+        "request": request,
+        "active_page": "packages",
+        "hostnames": hostnames,
+    })
 
 
 @app.post("/api/hosts/criticality")
 async def set_host_criticality(request: Request):
-    """Set or update host criticality from a form POST."""
+    """Set or update host criticality (JSON body: {hostname, criticality})."""
     try:
-        form = await request.form()
-        hostname = form.get("hostname")
-        criticality = int(form.get("criticality", 1))
+        body = await request.json()
+        hostname = body.get("hostname")
+        criticality = int(body.get("criticality", 1))
         if not hostname:
             raise ValueError("hostname required")
 
@@ -446,16 +527,30 @@ async def set_host_criticality(request: Request):
             )
             conn.commit()
 
-        return RedirectResponse(url="/hosts", status_code=302)
+        return JSONResponse({"ok": True})
     except Exception as e:
         logger.error(f"Ошибка при установке критичности: {e}")
         return JSONResponse({"error": str(e)}, status_code=400)
 
 
-@app.get("/software-management", response_class=HTMLResponse)
-async def software_management_page():
-    """Render software management page."""
-    return get_software_management_page()
+@app.get("/software-management")
+async def software_management_page(request: Request):
+    with get_db() as conn:
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM software_management WHERE status = 'new'")
+        new_count = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM software_management WHERE status = 'in_task'")
+        in_task_count = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM software_management WHERE status = 'ignore'")
+        ignore_count = c.fetchone()[0]
+
+    return templates.TemplateResponse("software_management.html", {
+        "request": request,
+        "active_page": "software-management",
+        "new_count": new_count,
+        "in_task_count": in_task_count,
+        "ignore_count": ignore_count,
+    })
 
 
 

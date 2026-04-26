@@ -1,309 +1,160 @@
-<!DOCTYPE html>
-<html lang="ru">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Хосты - Сборщик уязвимостей</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+{% extends "base.html" %}
 
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 20px;
-        }
+{% block title %}Хосты — Сборщик уязвимостей{% endblock %}
 
-        .navbar {
-            background: white;
-            padding: 15px 0;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            margin-bottom: 30px;
-            border-radius: 5px;
-        }
+{% block extra_styles %}
+.ping-status { padding: 4px 8px; border-radius: 3px; font-size: 12px; font-weight: 600; }
+.ping-status.online  { background: #c8e6c9; color: #2e7d32; }
+.ping-status.offline { background: #ffcdd2; color: #c62828; }
+.ping-status.checking{ background: #fff9c4; color: #f57f17; }
 
-        .nav-container {
-            max-width: 1400px;
-            margin: 0 auto;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 0 20px;
-        }
+.modal { display: none; position: fixed; top:0; left:0; width:100%; height:100%;
+         background: rgba(0,0,0,0.5); z-index:1000; align-items:center; justify-content:center; }
+.modal.active { display: flex; }
+.modal-content { background:white; padding:30px; border-radius:10px;
+                 max-width:600px; width:90%; max-height:80vh; overflow-y:auto; }
+.modal h2 { margin-bottom:20px; color:#333; }
+.modal-buttons { display:flex; gap:10px; margin-top:20px; }
+.crit-select { padding:4px 6px; }
+.crit-saved  { color:#2e7d32; font-size:12px; margin-left:4px; }
+{% endblock %}
 
-        .nav-logo {
-            font-size: 18px;
-            font-weight: bold;
-            color: #667eea;
-        }
+{% block content %}
+<h1>🖥️ Управление хостами</h1>
 
-        .nav-links {
-            display: flex;
-            gap: 20px;
-            list-style: none;
-        }
+<div class="section">
+    <h2>📋 Список хостов</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Имя хоста</th>
+                <th>IP адрес</th>
+                <th>ОС</th>
+                <th>Последний отчёт</th>
+                <th>Статус Ping</th>
+                <th>Кол-во ПО</th>
+                <th>Рисков</th>
+                <th>Макс. риск</th>
+                <th>Критичность</th>
+                <th>Действия</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for h in hosts %}
+            <tr data-hostname="{{ h.hostname }}">
+                <td>{{ h.hostname }}</td>
+                <td>{{ h.ip or '' }}</td>
+                <td>{{ h.os or '' }}</td>
+                <td>{{ h.received_at or '' }}</td>
+                <td><span class="ping-status checking" id="ping-{{ h.hostname }}">...</span></td>
+                <td>{{ h.software_count }}</td>
+                <td>{{ h.risky_count }}</td>
+                <td>{{ "%.2f" | format(h.top_risk) }}</td>
+                <td>
+                    <select class="crit-select" id="crit-{{ h.hostname }}"
+                            onchange="setCriticality('{{ h.hostname }}', this.value)">
+                        {% for i in range(1, 6) %}
+                        <option value="{{ i }}" {% if i == h.criticality %}selected{% endif %}>{{ i }}</option>
+                        {% endfor %}
+                    </select>
+                    <span class="crit-saved" id="crit-saved-{{ h.hostname }}" style="display:none;">✓</span>
+                </td>
+                <td>
+                    <button class="btn btn-primary" onclick="viewSoftware('{{ h.hostname }}')">Просмотр</button>
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="10" class="table-empty">Нет хостов</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
 
-        .nav-links a {
-            text-decoration: none;
-            color: #333;
-            font-weight: 500;
-        }
-
-        .nav-links a.active {
-            color: #667eea;
-            border-bottom: 2px solid #667eea;
-            padding-bottom: 3px;
-        }
-
-        .logout-btn {
-            background: #d32f2f;
-            color: white;
-            border: none;
-            padding: 8px 16px;
-            border-radius: 5px;
-            cursor: pointer;
-        }
-
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-        }
-
-        h1 {
-            color: white;
-            margin-bottom: 30px;
-        }
-
-        .section {
-            background: white;
-            border-radius: 10px;
-            padding: 20px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-        }
-
-        .section h2 {
-            color: #333;
-            margin-bottom: 20px;
-            font-size: 20px;
-            border-bottom: 2px solid #667eea;
-            padding-bottom: 10px;
-        }
-
-        table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-
-        th {
-            background: #f5f5f5;
-            padding: 12px;
-            text-align: left;
-            font-weight: 600;
-            color: #333;
-            border-bottom: 2px solid #ddd;
-        }
-
-        td {
-            padding: 12px;
-            border-bottom: 1px solid #eee;
-        }
-
-        tr:hover {
-            background: #f9f9f9;
-        }
-
-        .ping-status {
-            padding: 4px 8px;
-            border-radius: 3px;
-            font-size: 12px;
-            font-weight: 600;
-        }
-
-        .ping-status.online {
-            background: #c8e6c9;
-            color: #2e7d32;
-        }
-
-        .ping-status.offline {
-            background: #ffcdd2;
-            color: #c62828;
-        }
-
-        .ping-status.checking {
-            background: #fff9c4;
-            color: #f57f17;
-        }
-
-        .modal {
-            display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0,0,0,0.5);
-            z-index: 1000;
-            align-items: center;
-            justify-content: center;
-        }
-
-        .modal.active {
-            display: flex;
-        }
-
-        .modal-content {
-            background: white;
-            padding: 30px;
-            border-radius: 10px;
-            max-width: 600px;
-            width: 90%;
-            max-height: 80vh;
-            overflow-y: auto;
-        }
-
-        .modal h2 {
-            margin-bottom: 20px;
-            color: #333;
-        }
-
-        .modal-buttons {
-            display: flex;
-            gap: 10px;
-            margin-top: 20px;
-        }
-
-        .btn-close {
-            background: #ddd;
-            color: #333;
-            border: none;
-            padding: 10px 20px;
-            border-radius: 5px;
-            cursor: pointer;
-            font-weight: 600;
-        }
-    </style>
-</head>
-<body>
-    <nav class="navbar">
-        <div class="nav-container">
-            <div class="nav-logo">🛡️ Сборщик уязвимостей</div>
-            <ul class="nav-links">
-                <li><a href="/dashboard">Панель</a></li>
-                <li><a href="/hosts" class="active">Хосты</a></li>
-                <li><a href="/packages">Пакеты</a></li>
-                <li><a href="/software-management">Управление ПО</a></li>
-            </ul>
-            <form method="POST" action="/logout" style="margin:0;">
-                <button class="logout-btn">Выход</button>
-            </form>
-        </div>
-    </nav>
-
-    <div class="container">
-        <h1>🖥️ Управление хостами</h1>
-
-        <div class="section">
-            <h2>📋 Список хостов</h2>
-            <table>
-                <thead>
-                    <tr>
-                        <th>Имя хоста</th>
-                        <th>IP адрес</th>
-                        <th>ОС</th>
-                        <th>Последний отчёт</th>
-                        <th>Статус Ping</th>
-                        <th>Кол-во ПО</th>
-                        <th>Рисков</th>
-                        <th>Макс. риск</th>
-                        <th>Критичность</th>
-                        <th>Действия</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {hosts_rows}
-                </tbody>
-            </table>
+<div class="modal" id="softwareModal">
+    <div class="modal-content">
+        <h2 id="modalHostname">Детали ПО</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Название пакета</th>
+                    <th>Версия</th>
+                </tr>
+            </thead>
+            <tbody id="softwareBody"></tbody>
+        </table>
+        <div class="modal-buttons">
+            <button class="btn btn-secondary" onclick="closeSoftwareModal()">Закрыть</button>
         </div>
     </div>
+</div>
+{% endblock %}
 
-    <div class="modal" id="softwareModal">
-        <div class="modal-content">
-            <h2 id="modalHostname">Детали ПО</h2>
-            <table>
-                <thead>
-                    <tr>
-                        <th>Название пакета</th>
-                        <th>Версия</th>
-                    </tr>
-                </thead>
-                <tbody id="softwareBody">
-                </tbody>
-            </table>
-            <div class="modal-buttons">
-                <button class="btn-close" onclick="closeSoftwareModal()">Закрыть</button>
-            </div>
-        </div>
-    </div>
+{% block scripts %}
+<script>
+async function pingHost(hostname) {
+    const el = document.getElementById('ping-' + hostname);
+    el.textContent = '🔄 Проверка...';
+    el.className = 'ping-status checking';
+    try {
+        const r = await fetch('/api/hosts/ping?hostname=' + encodeURIComponent(hostname));
+        const d = await r.json();
+        if (d.online) {
+            el.textContent = '✓ Онлайн';
+            el.className = 'ping-status online';
+        } else {
+            el.textContent = '✗ Оффлайн';
+            el.className = 'ping-status offline';
+        }
+    } catch {
+        el.textContent = '? Ошибка';
+        el.className = 'ping-status offline';
+    }
+}
 
-    <script>
-        async function pingHost(hostname) {
-            const statusEl = document.getElementById(`ping-${hostname}`);
-            statusEl.textContent = '🔄 Проверка...';
-            statusEl.className = 'ping-status checking';
+function pingAllHosts() {
+    document.querySelectorAll('tr[data-hostname]').forEach(row => {
+        pingHost(row.getAttribute('data-hostname'));
+    });
+}
 
-            try {
-                const response = await fetch(`/api/hosts/ping?hostname=${encodeURIComponent(hostname)}`);
-                const data = await response.json();
-
-                if (data.online) {
-                    statusEl.textContent = '✓ Онлайн';
-                    statusEl.className = 'ping-status online';
-                } else {
-                    statusEl.textContent = '✗ Оффлайн';
-                    statusEl.className = 'ping-status offline';
-                }
-            } catch (err) {
-                statusEl.textContent = '? Ошибка';
-                statusEl.className = 'ping-status offline';
+async function setCriticality(hostname, value) {
+    try {
+        const resp = await fetch('/api/hosts/criticality', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({hostname, criticality: parseInt(value)})
+        });
+        if (resp.ok) {
+            const saved = document.getElementById('crit-saved-' + hostname);
+            if (saved) {
+                saved.style.display = 'inline';
+                setTimeout(() => { saved.style.display = 'none'; }, 2000);
             }
         }
+    } catch (err) {
+        alert('Ошибка: ' + err.message);
+    }
+}
 
-        function pingAllHosts() {
-            const hostRows = document.querySelectorAll('tr[data-hostname]');
-            hostRows.forEach(row => {
-                const hostname = row.getAttribute('data-hostname');
-                pingHost(hostname);
+function viewSoftware(hostname) {
+    fetch('/api/scan-host?hostname=' + encodeURIComponent(hostname))
+        .then(r => r.json())
+        .then(data => {
+            document.getElementById('modalHostname').textContent = 'ПО на ' + hostname;
+            const tbody = document.getElementById('softwareBody');
+            tbody.innerHTML = '';
+            data.software.forEach(pkg => {
+                tbody.innerHTML += '<tr><td>' + pkg.name + '</td><td>' + (pkg.version || 'Н/Д') + '</td></tr>';
             });
-        }
+            document.getElementById('softwareModal').classList.add('active');
+        });
+}
 
-        function viewSoftware(hostname) {
-            fetch(`/api/scan-host?hostname=${encodeURIComponent(hostname)}`)
-                .then(r => r.json())
-                .then(data => {
-                    document.getElementById('modalHostname').textContent = `ПО на ${hostname}`;
-                    const tbody = document.getElementById('softwareBody');
-                    tbody.innerHTML = '';
-                    data.software.forEach(pkg => {
-                        const row = `<tr><td>${pkg.name}</td><td>${pkg.version || 'Н/Д'}</td></tr>`;
-                        tbody.innerHTML += row;
-                    });
-                    document.getElementById('softwareModal').classList.add('active');
-                });
-        }
+function closeSoftwareModal() {
+    document.getElementById('softwareModal').classList.remove('active');
+}
 
-        function closeSoftwareModal() {
-            document.getElementById('softwareModal').classList.remove('active');
-        }
-
-        // Ping hosts on load
-        pingAllHosts();
-
-        // Refresh ping every 5 minutes
-        setInterval(pingAllHosts, 5 * 60 * 1000);
-    </script>
-</body>
-</html>
+pingAllHosts();
+setInterval(pingAllHosts, 5 * 60 * 1000);
+</script>
+{% endblock %}

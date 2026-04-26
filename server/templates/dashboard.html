@@ -1,232 +1,90 @@
-<!DOCTYPE html>
-<html lang="ru">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Панель - Сборщик уязвимостей</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+{% extends "base.html" %}
 
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 20px;
-        }
+{% block title %}Панель — Сборщик уязвимостей{% endblock %}
 
-        .navbar {
-            background: white;
-            padding: 15px 0;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            margin-bottom: 30px;
-            border-radius: 5px;
-            position: sticky;
-            top: 0;
-            z-index: 100;
-        }
+{% block content %}
+<h1>📊 Панель</h1>
 
-        .nav-container {
-            max-width: 1400px;
-            margin: 0 auto;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 0 20px;
-        }
-
-        .nav-logo {
-            font-size: 18px;
-            font-weight: bold;
-            color: #667eea;
-        }
-
-        .nav-links {
-            display: flex;
-            gap: 20px;
-            list-style: none;
-        }
-
-        .nav-links a {
-            text-decoration: none;
-            color: #333;
-            font-weight: 500;
-            transition: color 0.3s;
-        }
-
-        .nav-links a:hover {
-            color: #667eea;
-        }
-
-        .nav-links a.active {
-            color: #667eea;
-            border-bottom: 2px solid #667eea;
-            padding-bottom: 3px;
-        }
-
-        .logout-btn {
-            background: #d32f2f;
-            color: white;
-            border: none;
-            padding: 8px 16px;
-            border-radius: 5px;
-            cursor: pointer;
-            font-weight: 500;
-        }
-
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-        }
-
-        h1 {
-            color: white;
-            margin-bottom: 30px;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
-        }
-
-        .stats {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-            gap: 20px;
-            margin-bottom: 30px;
-        }
-
-        .stat-card {
-            background: white;
-            padding: 20px;
-            border-radius: 10px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-            text-align: center;
-        }
-
-        .stat-card h3 {
-            color: #667eea;
-            font-size: 14px;
-            text-transform: uppercase;
-            margin-bottom: 10px;
-        }
-
-        .stat-card .number {
-            font-size: 32px;
-            font-weight: bold;
-            color: #333;
-        }
-
-        .section {
-            background: white;
-            border-radius: 10px;
-            padding: 20px;
-            margin-bottom: 20px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-        }
-
-        .section h2 {
-            color: #333;
-            margin-bottom: 20px;
-            font-size: 20px;
-            border-bottom: 2px solid #667eea;
-            padding-bottom: 10px;
-        }
-
-        table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-
-        th {
-            background: #f5f5f5;
-            padding: 12px;
-            text-align: left;
-            font-weight: 600;
-            color: #333;
-            border-bottom: 2px solid #ddd;
-        }
-
-        td {
-            padding: 12px;
-            border-bottom: 1px solid #eee;
-        }
-
-        tr:hover {
-            background: #f9f9f9;
-        }
-    </style>
-</head>
-<body>
-    <nav class="navbar">
-        <div class="nav-container">
-            <div class="nav-logo">🛡️ Сборщик уязвимостей</div>
-            <ul class="nav-links">
-                <li><a href="/dashboard" class="active">Панель</a></li>
-                <li><a href="/hosts">Хосты</a></li>
-                <li><a href="/packages">Пакеты</a></li>
-                <li><a href="/software-management">Управление ПО</a></li>
-            </ul>
-            <form method="POST" action="/logout" style="margin:0;">
-                <button class="logout-btn">Выход</button>
-            </form>
-        </div>
-    </nav>
-
-    <div class="container">
-        <h1>📊 Панель</h1>
-
-        <div class="stats">
-            <div class="stat-card">
-                <h3>Отчёты</h3>
-                <div class="number">{reports_count}</div>
-            </div>
-            <div class="stat-card">
-                <h3>Хосты</h3>
-                <div class="number">{hosts_count}</div>
-            </div>
-            <div class="stat-card">
-                <h3>Пакеты ПО</h3>
-                <div class="number">{software_count}</div>
-            </div>
-            <div class="stat-card">
-                <h3>Уязвимые пакеты</h3>
-                <div class="number">{vulnerable_count}</div>
-            </div>
-        </div>
-
-        <div class="section">
-            <h2>📋 Последние отчёты</h2>
-            <table>
-                <thead>
-                    <tr>
-                        <th>ID</th>
-                        <th>Имя сервера</th>
-                        <th>IP</th>
-                        <th>ОС</th>
-                        <th>Получено</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {reports_rows}
-                </tbody>
-            </table>
-        </div>
-
-        <div class="section">
-            <h2>⚠️ ТОП уязвимых пакетов</h2>
-            <table>
-                <thead>
-                    <tr>
-                        <th>Название пакета</th>
-                        <th>Найдено CVE</th>
-                        <th>Макс. CVSS</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {vuln_rows}
-                </tbody>
-            </table>
-        </div>
+<div class="stats">
+    <div class="stat-card">
+        <h3>Отчёты</h3>
+        <div class="number">{{ stats.reports_count }}</div>
     </div>
-</body>
-</html>
+    <div class="stat-card">
+        <h3>Хосты</h3>
+        <div class="number">{{ stats.hosts_count }}</div>
+    </div>
+    <div class="stat-card">
+        <h3>Пакеты ПО</h3>
+        <div class="number">{{ stats.software_count }}</div>
+    </div>
+    <div class="stat-card danger">
+        <h3>Уязвимые пакеты</h3>
+        <div class="number">{{ stats.vulnerable_count }}</div>
+    </div>
+    <div class="stat-card">
+        <h3>Новые уязвимости</h3>
+        <div class="number">{{ stats.new_count }}</div>
+    </div>
+    <div class="stat-card warning">
+        <h3>В работе</h3>
+        <div class="number">{{ stats.in_task_count }}</div>
+    </div>
+    <div class="stat-card success">
+        <h3>Игнорировано</h3>
+        <div class="number">{{ stats.ignore_count }}</div>
+    </div>
+</div>
+
+<div class="section">
+    <h2>📋 Последние отчёты</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Имя сервера</th>
+                <th>IP</th>
+                <th>ОС</th>
+                <th>Получено</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for r in recent_reports %}
+            <tr>
+                <td>{{ r.id }}</td>
+                <td>{{ r.hostname }}</td>
+                <td>{{ r.ip }}</td>
+                <td>{{ r.os }}</td>
+                <td>{{ r.received_at }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5" class="table-empty">Нет отчётов</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<div class="section">
+    <h2>⚠️ ТОП уязвимых пакетов</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Название пакета</th>
+                <th>Найдено CVE</th>
+                <th>Макс. CVSS</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for p in vulnerable_packages %}
+            <tr>
+                <td>{{ p.package_name }}</td>
+                <td>{{ p.cves_found }}</td>
+                <td>{{ "%.1f" | format(p.cvss_max) }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="3" class="table-empty">Нет данных</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}
