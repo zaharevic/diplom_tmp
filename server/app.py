@@ -8,7 +8,7 @@ import sqlite3
 import logging
 import time
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date, timedelta
 import socket
 import threading
 import subprocess
@@ -430,6 +430,9 @@ async def dashboard(request: Request):
         in_task_count = c.fetchone()[0]
         c.execute("SELECT COUNT(*) FROM software_management WHERE status = 'ignore'")
         ignore_count = c.fetchone()[0]
+        c.execute("""SELECT COUNT(*) FROM software_management
+                     WHERE status = 'in_task' AND due_date IS NOT NULL AND due_date < date('now')""")
+        overdue_count = c.fetchone()[0]
         c.execute("""SELECT id, hostname, ip, os, received_at FROM reports
                      WHERE id IN (SELECT MAX(id) FROM reports GROUP BY hostname)
                      ORDER BY received_at DESC LIMIT 10""")
@@ -448,6 +451,7 @@ async def dashboard(request: Request):
             "new_count": new_count,
             "in_task_count": in_task_count,
             "ignore_count": ignore_count,
+            "overdue_count": overdue_count,
         },
         "recent_reports": recent_reports,
         "vulnerable_packages": vulnerable_packages,
@@ -580,6 +584,14 @@ def normalize_package_name(name: str) -> str:
         if n.startswith(p):
             return p.rstrip('-')
     return n
+
+
+def sla_days_for_cvss(cvss: float) -> int:
+    """Return SLA deadline in days based on CVSS score."""
+    if cvss >= 9.0: return 7
+    if cvss >= 7.0: return 30
+    if cvss >= 4.0: return 90
+    return 180
 
 
 # Initialize database on startup
@@ -1353,7 +1365,8 @@ async def get_software_management():
                 COALESCE(m.in_kev, 0)                         AS in_kev,
                 COALESCE(m.cves_found, 0)                     AS cves_found,
                 COALESCE(m.cvss_max, 0.0)                     AS cvss_max,
-                m.last_checked
+                m.last_checked,
+                m.due_date
             FROM (
                 SELECT DISTINCT name, COALESCE(version, '') AS version, hostname
                 FROM software
@@ -1365,9 +1378,11 @@ async def get_software_management():
         """)
         rows = c.fetchall()
 
+    today = date.today().isoformat()
     result = []
     for row in rows:
         hosts_raw = row["hosts"] or ""
+        due = row["due_date"]
         result.append({
             "original_name":    row["original_name"],
             "version":          row["version"],
@@ -1380,6 +1395,8 @@ async def get_software_management():
             "cves_found":       row["cves_found"] or 0,
             "cvss_max":         row["cvss_max"] or 0.0,
             "last_checked":     row["last_checked"],
+            "due_date":         due,
+            "is_overdue":       bool(due and row["status"] == "in_task" and due < today),
         })
 
     logger.debug(f"Retrieved {len(result)} (name, version) entries for software management")
@@ -1408,21 +1425,41 @@ async def update_software_management(request: Request):
     if not normalized_for_nvd:
         normalized_for_nvd = normalize_for_nvd(original_name)
 
+    # Auto-compute SLA due_date when moving to in_task
+    due_date_val = None
+    if status == "in_task":
+        with get_db() as conn:
+            row = conn.execute(
+                "SELECT cvss_max, due_date FROM software_management WHERE original_name=? AND version=?",
+                (original_name, version)
+            ).fetchone()
+        existing_due = row["due_date"] if row else None
+        # Keep existing due_date if already set; otherwise compute fresh
+        if existing_due:
+            due_date_val = existing_due
+        else:
+            cvss = float(row["cvss_max"] or 0.0) if row else 0.0
+            days = sla_days_for_cvss(cvss)
+            due_date_val = (date.today() + timedelta(days=days)).isoformat()
+
     with get_db() as conn:
         conn.execute("""
             INSERT INTO software_management
-                (original_name, version, normalized_for_nvd, status, comment, updated_at)
-            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                (original_name, version, normalized_for_nvd, status, comment, due_date, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(original_name, version) DO UPDATE SET
                 normalized_for_nvd = excluded.normalized_for_nvd,
                 status             = excluded.status,
                 comment            = excluded.comment,
+                due_date           = CASE WHEN excluded.status = 'in_task'
+                                          THEN COALESCE(software_management.due_date, excluded.due_date)
+                                          ELSE NULL END,
                 updated_at         = CURRENT_TIMESTAMP
-        """, (original_name, version, normalized_for_nvd, status, comment))
+        """, (original_name, version, normalized_for_nvd, status, comment, due_date_val))
         conn.commit()
 
     return JSONResponse({"success": True, "original_name": original_name,
-                         "version": version, "status": status})
+                         "version": version, "status": status, "due_date": due_date_val})
 
 
 @app.post("/api/software-management/bulk-update")
@@ -1443,23 +1480,51 @@ async def bulk_update_software_management(request: Request):
         if pkg.get("status") not in ("new", "in_task", "ignore"):
             raise HTTPException(status_code=400, detail="Each package status must be: new, in_task, or ignore")
 
+    today_str = date.today().isoformat()
     with get_db() as conn:
+        # Pre-fetch existing cvss_max + due_date for all in_task entries in one query
+        names_versions = [(pkg["original_name"], pkg.get("version", ""))
+                          for pkg in packages if pkg["status"] == "in_task"]
+        existing_map = {}
+        if names_versions:
+            for n, v in names_versions:
+                row = conn.execute(
+                    "SELECT cvss_max, due_date FROM software_management WHERE original_name=? AND version=?",
+                    (n, v)
+                ).fetchone()
+                existing_map[(n, v)] = row
+
         for pkg in packages:
             name    = pkg["original_name"]
             version = pkg.get("version", "")
             norm    = pkg.get("normalized_for_nvd") or normalize_for_nvd(name)
             status  = pkg["status"]
             comment = pkg.get("comment", "")
+
+            due_date_val = None
+            if status == "in_task":
+                row = existing_map.get((name, version))
+                existing_due = row["due_date"] if row else None
+                if existing_due:
+                    due_date_val = existing_due
+                else:
+                    cvss = float(row["cvss_max"] or 0.0) if row else 0.0
+                    days = sla_days_for_cvss(cvss)
+                    due_date_val = (date.today() + timedelta(days=days)).isoformat()
+
             conn.execute("""
                 INSERT INTO software_management
-                    (original_name, version, normalized_for_nvd, status, comment, updated_at)
-                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    (original_name, version, normalized_for_nvd, status, comment, due_date, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(original_name, version) DO UPDATE SET
                     normalized_for_nvd = excluded.normalized_for_nvd,
                     status             = excluded.status,
                     comment            = excluded.comment,
+                    due_date           = CASE WHEN excluded.status = 'in_task'
+                                              THEN COALESCE(software_management.due_date, excluded.due_date)
+                                              ELSE NULL END,
                     updated_at         = CURRENT_TIMESTAMP
-            """, (name, version, norm, status, comment))
+            """, (name, version, norm, status, comment, due_date_val))
         conn.commit()
 
     return JSONResponse({"success": True, "updated_count": len(packages)})

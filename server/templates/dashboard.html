@@ -34,6 +34,10 @@
         <h3>Игнорировано</h3>
         <div class="number">{{ stats.ignore_count }}</div>
     </div>
+    <div class="stat-card{% if stats.overdue_count > 0 %} danger{% endif %}">
+        <h3>⚠️ Просрочено SLA</h3>
+        <div class="number">{{ stats.overdue_count }}</div>
+    </div>
 </div>
 
 <div class="section">

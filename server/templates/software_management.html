@@ -25,6 +25,11 @@
 .cvss-high   { color:#c62828; font-weight:600; }
 .cvss-medium { color:#e65100; font-weight:600; }
 .cvss-low    { color:#2e7d32; }
+.sla-overdue { background:#ffebee; color:#c62828; border-radius:4px; padding:2px 7px;
+               font-size:12px; font-weight:600; white-space:nowrap; }
+.sla-ok      { color:#555; font-size:12px; white-space:nowrap; }
+.sla-warning { background:#fff3e0; color:#e65100; border-radius:4px; padding:2px 7px;
+               font-size:12px; font-weight:600; white-space:nowrap; }
 
 .modal { display:none; position:fixed; top:0; left:0; width:100%; height:100%;
          background:rgba(0,0,0,.5); z-index:1000; align-items:center; justify-content:center; }
@@ -105,12 +110,13 @@
                 <th>EPSS</th>
                 <th>KEV</th>
                 <th>Последняя проверка</th>
+                <th>SLA / Дедлайн</th>
                 <th>Статус</th>
                 <th>Действия</th>
             </tr>
         </thead>
         <tbody id="softwareBody">
-            <tr><td colspan="11" class="table-empty">Загружение...</td></tr>
+            <tr><td colspan="12" class="table-empty">Загружение...</td></tr>
         </tbody>
     </table>
 </div>
@@ -156,7 +162,7 @@ function renderSoftware() {
 
     const tbody = document.getElementById('softwareBody');
     if (filtered.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="11" class="table-empty">ПО не найдено</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="12" class="table-empty">ПО не найдено</td></tr>';
         updateBulkActionsUI();
         return;
     }
@@ -174,6 +180,18 @@ function renderSoftware() {
         const cvssVal   = sw.cvss_max > 0
             ? `<span class="${cvssClass(sw.cvss_max)}">${sw.cvss_max.toFixed(1)}</span>`
             : '<span style="color:#999">-</span>';
+        let slaHtml = '<span style="color:#999">—</span>';
+        if (sw.due_date && sw.status === 'in_task') {
+            const today = new Date().toISOString().slice(0,10);
+            const daysLeft = Math.round((new Date(sw.due_date) - new Date(today)) / 86400000);
+            if (sw.is_overdue || daysLeft < 0) {
+                slaHtml = `<span class="sla-overdue">⚠️ Просрочено (${sw.due_date})</span>`;
+            } else if (daysLeft <= 7) {
+                slaHtml = `<span class="sla-warning">🔔 ${daysLeft}д (${sw.due_date})</span>`;
+            } else {
+                slaHtml = `<span class="sla-ok">${sw.due_date}</span>`;
+            }
+        }
 
         return `<tr>
             <td class="checkbox-col">
@@ -188,6 +206,7 @@ function renderSoftware() {
             <td>${epssHtml}</td>
             <td>${kevHtml}</td>
             <td>${sw.last_checked ? sw.last_checked.slice(0,16) : '<span style="color:#999">—</span>'}</td>
+            <td>${slaHtml}</td>
             <td><span class="status-${sw.status}" style="border-radius:4px;padding:2px 8px;font-size:12px;">${sw.status}</span></td>
             <td>
                 <div class="action-btns">

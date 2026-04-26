@@ -168,6 +168,10 @@ def _run_migrations(c):
         # Table already has the new schema — just add any missing columns
         _safe_alter(c, "ALTER TABLE software_management ADD COLUMN cves_found INTEGER DEFAULT 0")
         _safe_alter(c, "ALTER TABLE software_management ADD COLUMN cvss_max REAL DEFAULT 0")
+        _safe_alter(c, "ALTER TABLE software_management ADD COLUMN due_date TEXT")
+
+    # Always ensure new columns exist (idempotent, safe on any schema version)
+    _safe_alter(c, "ALTER TABLE software_management ADD COLUMN due_date TEXT")
 
     # Fix any legacy invalid status values
     c.execute("UPDATE software_management SET status = 'new' WHERE status IS NULL OR status = ''")
