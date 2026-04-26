@@ -137,6 +137,21 @@ def _create_tables(c):
     """)
     c.execute("CREATE INDEX IF NOT EXISTS idx_vuln_exceptions_pkg ON vuln_exceptions(original_name, version)")
 
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS vulnerability_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            snapshot_date TEXT NOT NULL UNIQUE,
+            total_packages INTEGER DEFAULT 0,
+            vulnerable_packages INTEGER DEFAULT 0,
+            critical_count INTEGER DEFAULT 0,
+            high_count INTEGER DEFAULT 0,
+            in_task_count INTEGER DEFAULT 0,
+            overdue_count INTEGER DEFAULT 0,
+            has_exploit_count INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
 
 def _run_migrations(c):
     """Idempotent ALTER TABLE migrations."""

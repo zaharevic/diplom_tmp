@@ -131,6 +131,17 @@ scan_all_state_lock = threading.Lock()
 
 
 @app.on_event("startup")
+def auto_daily_snapshot():
+    """Take a snapshot on startup if one hasn't been taken today."""
+    try:
+        taken = take_snapshot()
+        if taken:
+            logger.info("Daily snapshot created on startup")
+    except Exception as e:
+        logger.warning(f"auto_daily_snapshot failed: {e}")
+
+
+@app.on_event("startup")
 def ensure_nvd_populated():
     """On startup, if the local NVD DB exists but has no CVE rows,
     run a background import of all NVD yearly feeds + modified feed.
@@ -442,6 +453,12 @@ async def dashboard(request: Request):
         c.execute("""SELECT package_name, cves_found, cvss_max FROM cve_cache
                      WHERE cves_found > 0 ORDER BY cves_found DESC LIMIT 10""")
         vulnerable_packages = [dict(row) for row in c.fetchall()]
+        c.execute("""
+            SELECT snapshot_date, vulnerable_packages, critical_count, has_exploit_count
+            FROM vulnerability_snapshots
+            ORDER BY snapshot_date DESC LIMIT 30
+        """)
+        snapshots = [dict(row) for row in reversed(c.fetchall())]
 
     return templates.TemplateResponse(request, "dashboard.html", {
         "active_page": "dashboard",
@@ -457,6 +474,7 @@ async def dashboard(request: Request):
         },
         "recent_reports": recent_reports,
         "vulnerable_packages": vulnerable_packages,
+        "snapshots": snapshots,
     })
 
 
@@ -594,6 +612,60 @@ def sla_days_for_cvss(cvss: float) -> int:
     if cvss >= 7.0: return 30
     if cvss >= 4.0: return 90
     return 180
+
+
+def take_snapshot(snapshot_date: str = None) -> bool:
+    """Compute and store a daily vulnerability snapshot.
+
+    Uses INSERT OR IGNORE so calling it twice on the same date is safe.
+    Returns True if a new row was inserted, False if already existed.
+    """
+    if snapshot_date is None:
+        snapshot_date = date.today().isoformat()
+    try:
+        with get_db() as conn:
+            row = conn.execute(
+                "SELECT id FROM vulnerability_snapshots WHERE snapshot_date = ?",
+                (snapshot_date,)
+            ).fetchone()
+            if row:
+                return False  # already taken today
+
+            total = conn.execute(
+                "SELECT COUNT(DISTINCT name || '|' || COALESCE(version,'')) FROM software"
+            ).fetchone()[0] or 0
+            vulnerable = conn.execute(
+                "SELECT COUNT(*) FROM software_management WHERE cves_found > 0"
+            ).fetchone()[0] or 0
+            critical = conn.execute(
+                "SELECT COUNT(*) FROM software_management WHERE cvss_max >= 9"
+            ).fetchone()[0] or 0
+            high = conn.execute(
+                "SELECT COUNT(*) FROM software_management WHERE cvss_max >= 7 AND cvss_max < 9"
+            ).fetchone()[0] or 0
+            in_task = conn.execute(
+                "SELECT COUNT(*) FROM software_management WHERE status = 'in_task'"
+            ).fetchone()[0] or 0
+            overdue = conn.execute(
+                "SELECT COUNT(*) FROM software_management"
+                " WHERE status='in_task' AND due_date IS NOT NULL AND due_date < date('now')"
+            ).fetchone()[0] or 0
+            has_exploit = conn.execute(
+                "SELECT COUNT(*) FROM software_management WHERE in_kev=1 OR ep_ss >= 0.7"
+            ).fetchone()[0] or 0
+
+            conn.execute("""
+                INSERT OR IGNORE INTO vulnerability_snapshots
+                    (snapshot_date, total_packages, vulnerable_packages,
+                     critical_count, high_count, in_task_count, overdue_count, has_exploit_count)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (snapshot_date, total, vulnerable, critical, high, in_task, overdue, has_exploit))
+            conn.commit()
+        logger.info(f"Snapshot taken for {snapshot_date}: vuln={vulnerable}, crit={critical}")
+        return True
+    except Exception as e:
+        logger.error(f"take_snapshot failed: {e}")
+        return False
 
 
 # Initialize database on startup
@@ -1808,6 +1880,28 @@ async def remove_vuln_exception(request: Request):
         conn.commit()
 
     return JSONResponse({"ok": True})
+
+
+@app.post("/api/snapshots/take")
+async def api_take_snapshot():
+    """Manually trigger a snapshot for today."""
+    taken = take_snapshot()
+    return JSONResponse({"ok": True, "new": taken, "date": date.today().isoformat()})
+
+
+@app.get("/api/snapshots")
+async def get_snapshots(days: int = 30):
+    """Return last N days of vulnerability snapshots."""
+    with get_db() as conn:
+        rows = conn.execute("""
+            SELECT snapshot_date, total_packages, vulnerable_packages,
+                   critical_count, high_count, in_task_count,
+                   overdue_count, has_exploit_count
+            FROM vulnerability_snapshots
+            ORDER BY snapshot_date DESC
+            LIMIT ?
+        """, (days,)).fetchall()
+    return JSONResponse([dict(r) for r in reversed(rows)])
 
 
 @app.get("/api/scan-queue")
