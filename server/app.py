@@ -1867,14 +1867,26 @@ async def export_pdf():
             LIMIT 100
         """).fetchall()
 
-        top_cves = conn.execute("""
-            SELECT h.cve_id, h.risk_score, vr.ep_ss, vr.in_kev, cve.cvss_score,
-                   substr(cve.description,1,120) AS description
-            FROM vuln_risk_host h
-            LEFT JOIN vuln_risk vr ON h.cve_id = vr.cve_id
-            LEFT JOIN cve ON cve.id = h.cve_id
-            ORDER BY h.risk_score DESC LIMIT 10
-        """).fetchall()
+        nvd_db_path = find_local_nvd_db()
+        if nvd_db_path:
+            conn.execute(f"ATTACH DATABASE '{nvd_db_path}' AS nvd")
+            top_cves = conn.execute("""
+                SELECT h.cve_id, h.risk_score, vr.ep_ss, vr.in_kev,
+                       nc.cvss_score, substr(nc.description,1,120) AS description
+                FROM vuln_risk_host h
+                LEFT JOIN vuln_risk vr ON h.cve_id = vr.cve_id
+                LEFT JOIN nvd.cve nc ON nc.id = h.cve_id
+                ORDER BY h.risk_score DESC LIMIT 10
+            """).fetchall()
+            conn.execute("DETACH DATABASE nvd")
+        else:
+            top_cves = conn.execute("""
+                SELECT h.cve_id, h.risk_score, vr.ep_ss, vr.in_kev,
+                       NULL as cvss_score, '' as description
+                FROM vuln_risk_host h
+                LEFT JOIN vuln_risk vr ON h.cve_id = vr.cve_id
+                ORDER BY h.risk_score DESC LIMIT 10
+            """).fetchall()
 
     class VulnReport(FPDF):
         def header(self):
