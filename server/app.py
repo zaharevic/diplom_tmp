@@ -434,8 +434,7 @@ async def dashboard(request: Request):
                      WHERE cves_found > 0 ORDER BY cves_found DESC LIMIT 10""")
         vulnerable_packages = [dict(row) for row in c.fetchall()]
 
-    return templates.TemplateResponse("dashboard.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "dashboard.html", {
         "active_page": "dashboard",
         "stats": {
             "reports_count": reports_count,
@@ -487,8 +486,7 @@ async def hosts_page(request: Request):
         """)
         hosts = [dict(row) for row in c.fetchall()]
 
-    return templates.TemplateResponse("hosts.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "hosts.html", {
         "active_page": "hosts",
         "hosts": hosts,
     })
@@ -501,8 +499,7 @@ async def packages_page(request: Request):
         c.execute("SELECT DISTINCT hostname FROM reports ORDER BY hostname")
         hostnames = [row[0] for row in c.fetchall()]
 
-    return templates.TemplateResponse("packages.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "packages.html", {
         "active_page": "packages",
         "hostnames": hostnames,
     })
@@ -544,8 +541,7 @@ async def software_management_page(request: Request):
         c.execute("SELECT COUNT(*) FROM software_management WHERE status = 'ignore'")
         ignore_count = c.fetchone()[0]
 
-    return templates.TemplateResponse("software_management.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "software_management.html", {
         "active_page": "software-management",
         "new_count": new_count,
         "in_task_count": in_task_count,
