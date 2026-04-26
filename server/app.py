@@ -120,6 +120,10 @@ import_status = {
 }
 import_status_lock = threading.Lock()
 
+# Status tracker for background "scan all software" job
+scan_all_state      = {"running": False, "done": 0, "total": 0, "errors": 0}
+scan_all_state_lock = threading.Lock()
+
 
 # ==================== AUTHENTICATION ROUTES ====================
 
@@ -1461,38 +1465,120 @@ async def bulk_update_software_management(request: Request):
     return JSONResponse({"success": True, "updated_count": len(packages)})
 
 
+def _scan_one(name: str, version: str, nvd_db: str) -> dict:
+    """Scan a single (name, version) against local NVD DB and update software_management.
+
+    Returns {"cves_found", "cvss_max", "ep_ss_max", "in_kev"}.
+    Same logic as /api/scan-packages so results are always consistent.
+    """
+    ver = version or None
+    cves = match_package_to_cves(name, ver, nvd_db, limit=200)
+    if not cves:
+        norm_name = normalize_for_nvd(name)
+        if norm_name and norm_name != name:
+            cves = match_package_to_cves(norm_name, ver, nvd_db, limit=200)
+
+    cvss_max   = max((c.get("cvss_score") or 0.0 for c in cves), default=0.0)
+    ep_ss_max  = 0.0
+    kev_present = False
+
+    if cves:
+        cve_ids = [c["cve_id"] for c in cves[:100]]
+        ph = ",".join("?" for _ in cve_ids)
+        with get_db() as conn:
+            for row in conn.execute(
+                f"SELECT ep_ss, in_kev FROM vuln_risk WHERE cve_id IN ({ph})", cve_ids
+            ):
+                if row[0]: ep_ss_max = max(ep_ss_max, row[0])
+                if row[1]: kev_present = True
+
+    norm = normalize_for_nvd(name) or name
+    ver_key = version or ''
+    with get_db() as conn:
+        conn.execute("""
+            INSERT INTO software_management
+                (original_name, version, normalized_for_nvd, status, comment,
+                 ep_ss, in_kev, cves_found, cvss_max, last_checked)
+            VALUES (?, ?, ?, 'new', '', ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(original_name, version) DO UPDATE SET
+                ep_ss        = excluded.ep_ss,
+                in_kev       = excluded.in_kev,
+                cves_found   = excluded.cves_found,
+                cvss_max     = excluded.cvss_max,
+                last_checked = excluded.last_checked,
+                updated_at   = CURRENT_TIMESTAMP
+        """, (name, ver_key, norm, ep_ss_max, 1 if kev_present else 0, len(cves), cvss_max))
+        conn.commit()
+
+    return {"cves_found": len(cves), "cvss_max": cvss_max,
+            "ep_ss_max": ep_ss_max, "in_kev": kev_present}
+
+
 @app.post("/api/force-check")
 async def force_check_package(request: Request):
-    """Force check a package against NVD API, ignoring cache."""
+    """Scan a single (name, version) using local NVD DB — same method as scan-packages."""
     try:
         payload = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
-    
+
     package_name = payload.get("package_name")
-    version = payload.get("version")
-    
+    version      = payload.get("version", "") or ""
     if not package_name:
         raise HTTPException(status_code=400, detail="package_name required")
-    
-    logger.info(f"Force check requested for: {package_name} v{version}")
-    
-    # Clear cache entry
-    with nvd_client.cache._get_conn() as conn:
-        c = conn.cursor()
-        c.execute("DELETE FROM cve_cache WHERE package_name = ? AND version = ?", 
-                  (package_name, version or ""))
-        conn.commit()
-    
-    # Perform fresh NVD query
-    result = nvd_client.check_package(package_name, version)
-    
-    logger.info(
-        f"Force check complete for {package_name}: cves_found={result['cves_found']}, "
-        f"cvss_max={result['cvss_max']}"
-    )
-    
+
+    nvd_db = find_local_nvd_db()
+    if not nvd_db:
+        return JSONResponse({"error": "local NVD DB not found"}, status_code=404)
+
+    result = _scan_one(package_name, version, nvd_db)
+    logger.info(f"force-check {package_name} {version}: {result['cves_found']} CVEs")
     return JSONResponse(result)
+
+
+@app.post("/api/software-management/scan-all")
+async def scan_all_software():
+    """Start a background scan of all (name, version) pairs in the software table."""
+    with scan_all_state_lock:
+        if scan_all_state["running"]:
+            return JSONResponse({"status": "already_running", **scan_all_state})
+
+    nvd_db = find_local_nvd_db()
+    if not nvd_db:
+        return JSONResponse({"error": "local NVD DB not found"}, status_code=404)
+
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT name, COALESCE(version, '') AS version FROM software ORDER BY name"
+        ).fetchall()
+    total = len(rows)
+
+    with scan_all_state_lock:
+        scan_all_state.update({"running": True, "done": 0, "total": total, "errors": 0})
+
+    def _run():
+        for i, row in enumerate(rows):
+            name, version = row[0], row[1]
+            try:
+                _scan_one(name, version, nvd_db)
+            except Exception as e:
+                logger.warning(f"scan-all error for {name} {version}: {e}")
+                with scan_all_state_lock:
+                    scan_all_state["errors"] += 1
+            with scan_all_state_lock:
+                scan_all_state["done"] = i + 1
+        with scan_all_state_lock:
+            scan_all_state["running"] = False
+        logger.info(f"scan-all finished: {total} entries, {scan_all_state['errors']} errors")
+
+    threading.Thread(target=_run, daemon=True).start()
+    return JSONResponse({"status": "started", "total": total})
+
+
+@app.get("/api/software-management/scan-status")
+async def get_scan_all_status():
+    with scan_all_state_lock:
+        return JSONResponse(dict(scan_all_state))
 
 
 @app.get("/api/scan-queue")

@@ -62,11 +62,25 @@
 <div class="section">
     <h2>📦 Управление ПО</h2>
 
-    <div class="filter-tabs">
-        <button class="filter-btn active" onclick="filterByStatus('all', this)">Все</button>
-        <button class="filter-btn" onclick="filterByStatus('new', this)">Новое</button>
-        <button class="filter-btn" onclick="filterByStatus('in_task', this)">В работе</button>
-        <button class="filter-btn" onclick="filterByStatus('ignore', this)">Игнорировано</button>
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:10px; margin-bottom:20px;">
+        <div class="filter-tabs" style="margin-bottom:0;">
+            <button class="filter-btn active" onclick="filterByStatus('all', this)">Все</button>
+            <button class="filter-btn" onclick="filterByStatus('new', this)">Новое</button>
+            <button class="filter-btn" onclick="filterByStatus('in_task', this)">В работе</button>
+            <button class="filter-btn" onclick="filterByStatus('ignore', this)">Игнорировано</button>
+        </div>
+        <button class="btn btn-primary" id="scanAllBtn" onclick="startScanAll()">
+            🔍 Сканировать всё
+        </button>
+    </div>
+
+    <div id="scanAllProgress" style="display:none; margin-bottom:16px;">
+        <div style="display:flex; align-items:center; gap:12px;">
+            <div style="flex:1; background:#eee; border-radius:6px; height:12px; overflow:hidden;">
+                <div id="scanAllBar" style="background:#667eea; height:100%; width:0%; transition:width .4s;"></div>
+            </div>
+            <span id="scanAllLabel" style="font-size:13px; color:#555; white-space:nowrap;">0 / 0</span>
+        </div>
     </div>
 
     <div class="bulk-actions" id="bulkActions">
@@ -354,6 +368,64 @@ async function viewCVEs(packageName, version) {
 function closeCVEModal() { document.getElementById('cveModal').classList.remove('active'); }
 
 async function refreshSoftware() { await loadSoftwareData(); renderSoftware(); }
+
+// ── Scan-all ──────────────────────────────────────────────────────
+let _scanPollInterval = null;
+
+async function startScanAll() {
+    const btn = document.getElementById('scanAllBtn');
+    btn.disabled = true;
+    btn.textContent = '⏳ Запуск...';
+    try {
+        const resp = await fetch('/api/software-management/scan-all', {method:'POST'});
+        const data = await resp.json();
+        if (data.error) { alert('❌ ' + data.error); btn.disabled = false; btn.textContent = '🔍 Сканировать всё'; return; }
+        if (data.status === 'already_running') { alert('Сканирование уже запущено'); btn.disabled = false; return; }
+        showScanProgress(data.total);
+        _pollScanStatus();
+    } catch (err) { alert('❌ ' + err.message); btn.disabled = false; btn.textContent = '🔍 Сканировать всё'; }
+}
+
+function showScanProgress(total) {
+    document.getElementById('scanAllProgress').style.display = 'block';
+    document.getElementById('scanAllBar').style.width = '0%';
+    document.getElementById('scanAllLabel').textContent = `0 / ${total}`;
+}
+
+function _pollScanStatus() {
+    if (_scanPollInterval) clearInterval(_scanPollInterval);
+    _scanPollInterval = setInterval(async () => {
+        try {
+            const resp = await fetch('/api/software-management/scan-status');
+            const s    = await resp.json();
+            const pct  = s.total > 0 ? Math.round(s.done / s.total * 100) : 0;
+            document.getElementById('scanAllBar').style.width  = pct + '%';
+            document.getElementById('scanAllLabel').textContent = `${s.done} / ${s.total}`;
+            if (!s.running) {
+                clearInterval(_scanPollInterval);
+                document.getElementById('scanAllProgress').style.display = 'none';
+                const btn = document.getElementById('scanAllBtn');
+                btn.disabled    = false;
+                btn.textContent = '🔍 Сканировать всё';
+                await refreshSoftware();
+            }
+        } catch { /* ignore poll errors */ }
+    }, 1500);
+}
+
+// Resume polling if a scan is already running when the page loads
+(async () => {
+    try {
+        const resp = await fetch('/api/software-management/scan-status');
+        const s    = await resp.json();
+        if (s.running) {
+            showScanProgress(s.total);
+            document.getElementById('scanAllBtn').disabled = true;
+            _pollScanStatus();
+        }
+    } catch { /* ignore */ }
+})();
+// ─────────────────────────────────────────────────────────────────
 
 loadSoftware();
 setInterval(refreshSoftware, 60000);
