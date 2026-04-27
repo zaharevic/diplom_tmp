@@ -258,6 +258,26 @@ def _run_migrations(c):
     c.execute("CREATE INDEX IF NOT EXISTS idx_ssh_credentials_hostname ON ssh_credentials(hostname)")
     _safe_alter(c, "ALTER TABLE ssh_credentials ADD COLUMN host_address TEXT NOT NULL DEFAULT ''")
 
+    # Custom/manual recommendations per (CVE, package) — overrides auto-generated
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS cve_recommendations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cve_id TEXT NOT NULL,
+            original_name TEXT NOT NULL DEFAULT '',
+            version TEXT NOT NULL DEFAULT '',
+            rec_type TEXT NOT NULL DEFAULT 'update',
+            title TEXT NOT NULL,
+            description TEXT NOT NULL,
+            priority INTEGER NOT NULL DEFAULT 3,
+            regulatory_ref TEXT DEFAULT '',
+            regulatory_text TEXT DEFAULT '',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(cve_id, original_name, version, rec_type)
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_cve_rec_cve ON cve_recommendations(cve_id)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_cve_rec_pkg ON cve_recommendations(original_name, version)")
+
     # Fix any legacy invalid status values
     c.execute("UPDATE software_management SET status = 'new' WHERE status IS NULL OR status = ''")
     c.execute("UPDATE software_management SET status = 'new' WHERE status NOT IN ('new', 'in_task', 'ignore', 'fixed')")

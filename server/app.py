@@ -1416,6 +1416,85 @@ async def get_vuln_risk(host: str = None, limit: int = 100):
     return JSONResponse({"host": host, "results": data})
 
 
+@app.get("/api/recommendations")
+async def get_recommendations(
+    cve_id: str = "",
+    package_name: str = "",
+    version: str = "",
+):
+    """
+    Return remediation recommendations for a CVE / package combination.
+
+    Priority order:
+      1. Custom manual recommendations stored in cve_recommendations table
+      2. Auto-generated recommendations from the rule engine
+    """
+    from services.recommendations import generate, REGULATORY
+
+    cve_id_upper = cve_id.strip().upper()
+
+    # --- Load CVE attributes from vuln_risk + NVD local DB ---
+    epss, in_kev, cvss, description = 0.0, False, 0.0, ""
+
+    with get_db() as conn:
+        # Manual overrides first
+        manual_rows = conn.execute(
+            """SELECT rec_type, title, description, priority, regulatory_ref, regulatory_text
+               FROM cve_recommendations
+               WHERE cve_id = ? AND original_name = ? AND version = ?
+               ORDER BY priority""",
+            (cve_id_upper, package_name, version),
+        ).fetchall()
+
+        row = conn.execute(
+            "SELECT ep_ss, in_kev FROM vuln_risk WHERE cve_id = ?", (cve_id_upper,)
+        ).fetchone()
+        if row:
+            epss   = float(row[0] or 0.0)
+            in_kev = bool(row[1])
+
+    nvd_db = find_local_nvd_db()
+    if nvd_db and cve_id_upper:
+        try:
+            import sqlite3 as _sq
+            nc = _sq.connect(nvd_db)
+            nc.row_factory = _sq.Row
+            r = nc.execute(
+                "SELECT cvss_score, description FROM cve WHERE id = ?", (cve_id_upper,)
+            ).fetchone()
+            if r:
+                cvss        = float(r["cvss_score"] or 0.0)
+                description = r["description"] or ""
+            nc.close()
+        except Exception:
+            pass
+
+    # Use manual overrides if any, otherwise auto-generate
+    if manual_rows:
+        result = [dict(r) for r in manual_rows]
+    else:
+        recs   = generate(cve_id_upper, package_name, version, cvss, epss, in_kev, description)
+        result = [{
+            "rec_type":        r.rec_type,
+            "title":           r.title,
+            "description":     r.description,
+            "priority":        r.priority,
+            "regulatory_ref":  r.regulatory_ref,
+            "regulatory_text": r.regulatory_text,
+        } for r in recs]
+
+    return JSONResponse({
+        "cve_id":       cve_id_upper,
+        "package_name": package_name,
+        "version":      version,
+        "cvss":         cvss,
+        "epss":         epss,
+        "in_kev":       in_kev,
+        "recommendations": result,
+        "regulatory_catalogue": {k: v for k, v in REGULATORY.items()},
+    })
+
+
 @app.get("/host-risk", response_class=HTMLResponse)
 async def host_risk_page(host: str = None, limit: int = 50):
     """Simple HTML page showing top risky CVEs for a host."""

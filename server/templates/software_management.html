@@ -32,6 +32,18 @@
 .sla-warning { background:#fff3e0; color:#e65100; border-radius:4px; padding:2px 7px;
                font-size:12px; font-weight:600; white-space:nowrap; }
 
+.rec-card { border-left:4px solid #ddd; padding:10px 14px; margin-bottom:10px;
+            border-radius:0 6px 6px 0; background:#fafafa; }
+.rec-card.priority-1 { border-color:#c62828; background:#fff5f5; }
+.rec-card.priority-2 { border-color:#e65100; background:#fff8f0; }
+.rec-card.priority-3 { border-color:#f9a825; background:#fffde7; }
+.rec-card.priority-4 { border-color:#2e7d32; background:#f1f8e9; }
+.rec-card.priority-5 { border-color:#90a4ae; background:#f9f9f9; }
+.rec-title { font-weight:600; font-size:13px; margin-bottom:4px; }
+.rec-desc  { font-size:12px; color:#444; white-space:pre-wrap; word-break:break-word; }
+.rec-reg   { margin-top:6px; font-size:11px; color:#1565c0; background:#e3f2fd;
+             padding:2px 7px; border-radius:3px; display:inline-block; }
+
 .modal { display:none; position:fixed; top:0; left:0; width:100%; height:100%;
          background:rgba(0,0,0,.5); z-index:1000; align-items:center; justify-content:center; }
 .modal.active { display:flex; }
@@ -515,6 +527,10 @@ async function _loadCVEModalBody() {
                            style="padding:2px 7px;font-size:11px;background:white;color:#666;
                                   border:1px solid #ddd;border-radius:3px;cursor:pointer;">
                        FP</button>`;
+            const recBtn = `<button onclick='openRecPanel(${JSON.stringify(c.cve_id)},${JSON.stringify(_cveModalPkg)},${JSON.stringify(_cveModalVer||"")})'
+                style="padding:2px 7px;font-size:11px;background:#e8eaf6;color:#283593;
+                       border:1px solid #9fa8da;border-radius:3px;cursor:pointer;margin-top:2px">
+                🛡 Рекомендации</button>`;
             return `<tr style="${rowStyle}">
                 <td><a href="https://nvd.nist.gov/vuln/detail/${c.cve_id}" target="_blank">${c.cve_id}</a>${exploit}
                     ${c.is_fp ? '<span style="color:#888;font-size:11px"> [FP]</span>' : ''} ${conf}</td>
@@ -522,8 +538,8 @@ async function _loadCVEModalBody() {
                 <td style="text-align:center">${epss}</td>
                 <td style="text-align:center">${kev}</td>
                 <td style="text-align:center">${riskHtml}</td>
-                <td style="max-width:340px;font-size:13px">${c.description || '-'}</td>
-                <td>${fpBtn}</td>
+                <td style="max-width:300px;font-size:13px">${c.description || '-'}</td>
+                <td>${fpBtn}<br>${recBtn}</td>
             </tr>`;
         }).join('');
         body.innerHTML = `<div style="overflow:auto;max-height:60vh">
@@ -686,6 +702,67 @@ async function loadRiskTable() {
 }
 
 initRiskHostFilter().then(() => loadRiskTable());
+
+// ── Recommendations panel ──────────────────────────────────────────────────
+
+const PRIORITY_LABELS = {1:'Критичный',2:'Высокий',3:'Средний',4:'Низкий',5:'Информационный'};
+const REC_TYPE_LABELS  = {
+    urgent:'🚨 Срочно', update:'🔄 Обновление', config:'⚙️ Конфигурация',
+    restrict:'🔒 Ограничение доступа', auth:'🔑 Аутентификация',
+    monitor:'👁 Мониторинг', isolate:'🏗 Изоляция',
+};
+
+async function openRecPanel(cveId, pkgName, version) {
+    document.getElementById('recModalTitle').textContent = `Рекомендации: ${cveId} / ${pkgName}`;
+    const body = document.getElementById('recModalBody');
+    body.innerHTML = '<div style="text-align:center;padding:20px;color:#999">Загружение...</div>';
+    document.getElementById('recModal').classList.add('active');
+
+    try {
+        const url = `/api/recommendations?cve_id=${encodeURIComponent(cveId)}`
+                  + `&package_name=${encodeURIComponent(pkgName)}`
+                  + `&version=${encodeURIComponent(version||'')}`;
+        const r   = await fetch(url);
+        const d   = await r.json();
+        const recs = d.recommendations || [];
+
+        if (!recs.length) {
+            body.innerHTML = '<div style="color:#999;padding:16px">Рекомендации не найдены.</div>';
+            return;
+        }
+
+        const metaHtml = `
+            <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:14px;font-size:12px;">
+                <span>CVE: <strong>${d.cve_id}</strong></span>
+                ${d.cvss   ? `<span>CVSS: <strong>${Number(d.cvss).toFixed(1)}</strong></span>` : ''}
+                ${d.epss   ? `<span>EPSS: <strong>${Number(d.epss).toFixed(3)}</strong></span>` : ''}
+                ${d.in_kev ? `<span style="color:#c62828;font-weight:600">⚡ В базе KEV</span>` : ''}
+            </div>`;
+
+        const cards = recs.map(rec => {
+            const typeLabel = REC_TYPE_LABELS[rec.rec_type] || rec.rec_type;
+            const priLabel  = PRIORITY_LABELS[rec.priority] || rec.priority;
+            const priColor  = {1:'#c62828',2:'#e65100',3:'#f9a825',4:'#2e7d32',5:'#607d8b'}[rec.priority] || '#888';
+            return `<div class="rec-card priority-${rec.priority}">
+                <div class="rec-title">
+                    ${typeLabel}
+                    <span style="float:right;font-size:11px;color:${priColor};font-weight:600">${priLabel}</span>
+                </div>
+                <div style="font-size:13px;font-weight:600;margin-bottom:4px;color:#222">${rec.title}</div>
+                <div class="rec-desc">${rec.description}</div>
+                ${rec.regulatory_text ? `<div class="rec-reg" title="${rec.regulatory_text}">📋 ${rec.regulatory_ref} — ФСТЭК России</div>` : ''}
+            </div>`;
+        }).join('');
+
+        body.innerHTML = metaHtml + cards;
+    } catch (e) {
+        body.innerHTML = `<div style="color:#c62828">Ошибка: ${e.message}</div>`;
+    }
+}
+
+function closeRecModal() {
+    document.getElementById('recModal').classList.remove('active');
+}
 </script>
 
 <!-- Edit modal -->
@@ -724,6 +801,21 @@ initRiskHostFilter().then(() => loadRiskTable());
         <div id="historySection" style="margin-top:18px;border-top:1px solid #eee;padding-top:12px;">
             <div style="font-weight:600;font-size:13px;color:#555;margin-bottom:8px;">История изменений</div>
             <div id="historyBody" style="font-size:12px;color:#666;">—</div>
+        </div>
+    </div>
+</div>
+
+<!-- Recommendations modal -->
+<div class="modal" id="recModal">
+    <div class="modal-content" style="max-width:760px;max-height:85vh;overflow-y:auto">
+        <h2 id="recModalTitle" style="font-size:16px;margin-bottom:4px">Рекомендации</h2>
+        <p style="font-size:12px;color:#777;margin-bottom:16px">
+            Рекомендации сформированы на основе требований ФСТЭК России
+            (Приказы №17, №21, №239) и анализа характеристик уязвимости.
+        </p>
+        <div id="recModalBody">Загружение...</div>
+        <div class="modal-buttons" style="margin-top:16px">
+            <button class="btn-save" onclick="closeRecModal()">Закрыть</button>
         </div>
     </div>
 </div>
