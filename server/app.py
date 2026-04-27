@@ -589,6 +589,40 @@ async def set_host_criticality(request: Request):
         return JSONResponse({"error": str(e)}, status_code=400)
 
 
+@app.post("/api/hosts/add")
+async def add_host(request: Request):
+    """Manually add a host. Body: {hostname, ip?, os?, criticality?}"""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+    hostname = (body.get("hostname") or "").strip()
+    if not hostname:
+        raise HTTPException(status_code=400, detail="hostname required")
+    ip = (body.get("ip") or "").strip() or None
+    os_name = (body.get("os") or "").strip() or None
+    criticality = max(1, min(5, int(body.get("criticality") or 1)))
+
+    with get_db() as conn:
+        existing = conn.execute(
+            "SELECT host FROM hosts WHERE host = ?", (hostname,)
+        ).fetchone()
+        if existing:
+            raise HTTPException(status_code=409, detail="Host already exists")
+        conn.execute(
+            "INSERT INTO hosts (host, criticality, created_at, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            (hostname, criticality),
+        )
+        if ip or os_name:
+            import json as _json
+            conn.execute(
+                "INSERT INTO reports (hostname, ip, os, collected_at, received_at, raw_json) VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?)",
+                (hostname, ip, os_name, _json.dumps({"hostname": hostname, "software": []})),
+            )
+        conn.commit()
+    return JSONResponse({"ok": True, "hostname": hostname})
+
+
 @app.get("/software-management")
 async def software_management_page(request: Request):
     with get_db() as conn:
