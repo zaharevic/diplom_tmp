@@ -1072,22 +1072,25 @@ async def package_cves(package_name: str, version: str = None, limit: int = 200)
             logger.error(f"Error querying local NVD DB for {package_name}: {e}")
             return JSONResponse({"error": str(e)}, status_code=500)
 
-    # Enrich with EPSS/KEV from vuln_risk
+    # Enrich with EPSS/KEV/base_risk from vuln_risk
     if found_cves:
         ids = list(found_cves.keys())
         ph  = ",".join("?" for _ in ids)
         with get_db() as appconn:
             for row in appconn.execute(
-                f"SELECT cve_id, ep_ss, in_kev FROM vuln_risk WHERE cve_id IN ({ph})", ids
+                f"SELECT cve_id, ep_ss, in_kev, base_risk FROM vuln_risk WHERE cve_id IN ({ph})", ids
             ):
                 cid = row[0].upper()
                 if cid in found_cves:
-                    found_cves[cid]["ep_ss"]  = row[1] or 0.0
-                    found_cves[cid]["in_kev"] = bool(row[2])
+                    found_cves[cid]["ep_ss"]     = row[1] or 0.0
+                    found_cves[cid]["in_kev"]    = bool(row[2])
+                    found_cves[cid]["base_risk"] = row[3] or 0.0
 
-    # Compute has_exploit per CVE
+    # Compute has_exploit and fill missing base_risk per CVE
     for cid, cve in found_cves.items():
         cve["has_exploit"] = bool(cve.get("in_kev") or (cve.get("ep_ss") or 0) >= 0.7)
+        if "base_risk" not in cve:
+            cve["base_risk"] = compute_risk(cve.get("cvss") or 0.0, cve.get("ep_ss") or 0.0, bool(cve.get("in_kev")))
 
     # Mark known false positives
     if found_cves:
@@ -1553,6 +1556,7 @@ async def get_software_management():
             "due_date":         due,
             "is_overdue":       bool(due and row["status"] == "in_task" and due < today),
             "has_exploit":      bool(row["in_kev"] or (row["ep_ss"] or 0) >= 0.7),
+            "base_risk":        compute_risk(row["cvss_max"] or 0.0, row["ep_ss"] or 0.0, bool(row["in_kev"]), 1),
         })
 
     logger.debug(f"Retrieved {len(result)} (name, version) entries for software management")

@@ -120,6 +120,9 @@
                 <th>CVSS макс.</th>
                 <th>EPSS</th>
                 <th>KEV</th>
+                <th title="Риск = CVSS × (1 + EPSS×10) × KEV-коэф. / 1.5, нормировано 0–100"
+                    style="cursor:pointer;user-select:none" onclick="toggleSort('base_risk')">
+                    Риск <span id="sortIndicator">↕</span></th>
                 <th>Последняя проверка</th>
                 <th>SLA / Дедлайн</th>
                 <th>Статус</th>
@@ -131,6 +134,45 @@
         </tbody>
     </table>
 </div>
+<!-- Risk section -->
+<div class="section" style="margin-top:32px">
+    <h2>🎯 Топ CVE по риску</h2>
+    <div style="display:flex;gap:12px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
+        <div>
+            <label style="font-size:13px;color:#555;margin-right:6px">Хост:</label>
+            <select id="riskHostFilter" onchange="loadRiskTable()" style="padding:5px 8px;border:1px solid #ddd;border-radius:4px;font-size:13px">
+                <option value="">— Все хосты (глобальный риск) —</option>
+            </select>
+        </div>
+        <div>
+            <label style="font-size:13px;color:#555;margin-right:6px">Показать:</label>
+            <select id="riskLimit" onchange="loadRiskTable()" style="padding:5px 8px;border:1px solid #ddd;border-radius:4px;font-size:13px">
+                <option value="25">25</option>
+                <option value="50" selected>50</option>
+                <option value="100">100</option>
+            </select>
+        </div>
+        <button class="btn btn-secondary" style="padding:5px 12px;font-size:13px" onclick="loadRiskTable()">🔄 Обновить</button>
+    </div>
+    <div id="riskTableWrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>CVE</th>
+                    <th>Риск</th>
+                    <th>CVSS</th>
+                    <th>EPSS</th>
+                    <th>KEV</th>
+                    <th>Описание</th>
+                </tr>
+            </thead>
+            <tbody id="riskTableBody">
+                <tr><td colspan="7" class="table-empty">Загружение...</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -138,6 +180,8 @@
 let allSoftware = [];
 let currentFilter = 'all';
 let selectedKeys = new Set(); // "name|version"
+let sortField = null;
+let sortAsc = true;
 
 function rowKey(name, version) { return name + '|' + (version || ''); }
 
@@ -166,14 +210,28 @@ function cvssClass(v) {
     return 'cvss-low';
 }
 
+function toggleSort(field) {
+    if (sortField === field) sortAsc = !sortAsc;
+    else { sortField = field; sortAsc = false; }
+    const ind = document.getElementById('sortIndicator');
+    if (ind) ind.textContent = sortAsc ? '↑' : '↓';
+    renderSoftware();
+}
+
 function renderSoftware() {
-    const filtered = currentFilter === 'all'
-        ? allSoftware
+    let filtered = currentFilter === 'all'
+        ? allSoftware.slice()
         : allSoftware.filter(s => s.status === currentFilter);
+    if (sortField) {
+        filtered.sort((a, b) => {
+            const va = a[sortField] || 0, vb = b[sortField] || 0;
+            return sortAsc ? va - vb : vb - va;
+        });
+    }
 
     const tbody = document.getElementById('softwareBody');
     if (filtered.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="12" class="table-empty">ПО не найдено</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="13" class="table-empty">ПО не найдено</td></tr>';
         updateBulkActionsUI();
         return;
     }
@@ -185,6 +243,11 @@ function renderSoftware() {
             ? `<strong style="color:#c62828">${sw.ep_ss.toFixed(3)}</strong>`
             : '<span style="color:#999">-</span>';
         const kevHtml   = sw.in_kev ? '<strong style="color:#c62828">ДА</strong>' : 'НЕТ';
+        const riskVal   = sw.base_risk || 0;
+        const riskColor = riskVal >= 60 ? '#c62828' : riskVal >= 30 ? '#e65100' : riskVal > 0 ? '#2e7d32' : '#999';
+        const riskHtml  = riskVal > 0
+            ? `<strong style="color:${riskColor}">${riskVal.toFixed(1)}</strong>`
+            : '<span style="color:#999">-</span>';
         const exploitBadge = sw.has_exploit
             ? ' <span title="Известный эксплойт (KEV или EPSS≥0.7)" style="color:#e65100;font-size:14px;">⚡</span>'
             : '';
@@ -219,6 +282,7 @@ function renderSoftware() {
             <td>${cvssVal}</td>
             <td>${epssHtml}</td>
             <td>${kevHtml}</td>
+            <td>${riskHtml}</td>
             <td>${sw.last_checked ? sw.last_checked.slice(0,16) : '<span style="color:#999">—</span>'}</td>
             <td>${slaHtml}</td>
             <td><span class="status-${sw.status}" style="border-radius:4px;padding:2px 8px;font-size:12px;">${sw.status}</span></td>
@@ -431,13 +495,17 @@ async function _loadCVEModalBody() {
             body.innerHTML = '<div style="color:#666">CVE не найдены в локальной базе NVD.</div>';
             return;
         }
-        const rows = data.cves.map(c => {
+        const cveSorted = data.cves.slice().sort((a,b) => (b.base_risk||0) - (a.base_risk||0));
+        const rows = cveSorted.map(c => {
             const epss    = c.ep_ss ? Number(c.ep_ss).toFixed(3) : '-';
             const kev     = c.in_kev ? '<strong style="color:#c62828">ДА</strong>' : 'НЕТ';
             const conf    = c.confidence ? `<span style="color:#999;font-size:11px">(${c.confidence})</span>` : '';
             const exploit = c.has_exploit
                 ? ' <span title="Известный эксплойт" style="color:#e65100;">⚡</span>' : '';
             const rowStyle = c.is_fp ? 'background:#f5f5f5;opacity:.6;' : '';
+            const risk     = c.base_risk || 0;
+            const riskClr  = risk >= 60 ? '#c62828' : risk >= 30 ? '#e65100' : risk > 0 ? '#2e7d32' : '#999';
+            const riskHtml = risk > 0 ? `<strong style="color:${riskClr}">${risk.toFixed(1)}</strong>` : '-';
             const fpBtn   = c.is_fp
                 ? `<button onclick='removeFP(${JSON.stringify(c.cve_id)})'
                            style="padding:2px 7px;font-size:11px;background:#e8f5e9;color:#2e7d32;
@@ -453,7 +521,8 @@ async function _loadCVEModalBody() {
                 <td style="text-align:center">${c.cvss || '-'}</td>
                 <td style="text-align:center">${epss}</td>
                 <td style="text-align:center">${kev}</td>
-                <td style="max-width:380px;font-size:13px">${c.description || '-'}</td>
+                <td style="text-align:center">${riskHtml}</td>
+                <td style="max-width:340px;font-size:13px">${c.description || '-'}</td>
                 <td>${fpBtn}</td>
             </tr>`;
         }).join('');
@@ -464,6 +533,7 @@ async function _loadCVEModalBody() {
                     <th style="padding:6px">CVSS</th>
                     <th style="padding:6px">EPSS</th>
                     <th style="padding:6px">KEV</th>
+                    <th style="padding:6px">Риск</th>
                     <th style="text-align:left;padding:6px">Описание</th>
                     <th style="padding:6px">FP</th>
                 </tr></thead>
@@ -562,6 +632,60 @@ function _pollScanStatus() {
 
 loadSoftware();
 setInterval(refreshSoftware, 60000);
+
+// ── Risk table ─────────────────────────────────────────────────────────────
+
+async function initRiskHostFilter() {
+    try {
+        const r = await fetch('/api/hosts');
+        const d = await r.json();
+        const sel = document.getElementById('riskHostFilter');
+        (d.hosts || []).forEach(h => {
+            const opt = document.createElement('option');
+            opt.value = h; opt.textContent = h;
+            sel.appendChild(opt);
+        });
+    } catch {}
+}
+
+async function loadRiskTable() {
+    const host  = document.getElementById('riskHostFilter').value;
+    const limit = document.getElementById('riskLimit').value;
+    const tbody = document.getElementById('riskTableBody');
+    tbody.innerHTML = '<tr><td colspan="7" class="table-empty">Загружение...</td></tr>';
+    try {
+        const url = '/api/vulns/risk?limit=' + limit + (host ? '&host=' + encodeURIComponent(host) : '');
+        const r   = await fetch(url);
+        const d   = await r.json();
+        const results = d.results || [];
+        if (!results.length) {
+            tbody.innerHTML = '<tr><td colspan="7" class="table-empty">Нет данных. Запустите обновление EPSS/KEV на дашборде и пересканируйте пакеты.</td></tr>';
+            return;
+        }
+        const scoreKey = host ? 'risk_score' : 'base_risk';
+        tbody.innerHTML = results.map((row, i) => {
+            const score    = row[scoreKey] || 0;
+            const scoreClr = score >= 60 ? '#c62828' : score >= 30 ? '#e65100' : '#2e7d32';
+            const kev      = row.in_kev ? '<strong style="color:#c62828">ДА</strong>' : 'НЕТ';
+            const epss     = row.ep_ss ? Number(row.ep_ss).toFixed(3) : '-';
+            const cvss     = row.cvss_score ? Number(row.cvss_score).toFixed(1) : '-';
+            const desc     = (row.description || '').slice(0, 120);
+            return `<tr>
+                <td style="color:#999;font-size:12px">${i + 1}</td>
+                <td><a href="https://nvd.nist.gov/vuln/detail/${row.cve_id}" target="_blank">${row.cve_id}</a></td>
+                <td><strong style="color:${scoreClr}">${score.toFixed(1)}</strong></td>
+                <td style="text-align:center">${cvss}</td>
+                <td style="text-align:center">${epss}</td>
+                <td style="text-align:center">${kev}</td>
+                <td style="font-size:12px;color:#555;max-width:400px">${desc || '—'}</td>
+            </tr>`;
+        }).join('');
+    } catch (e) {
+        tbody.innerHTML = `<tr><td colspan="7" style="color:#d32f2f;text-align:center">Ошибка: ${e.message}</td></tr>`;
+    }
+}
+
+initRiskHostFilter().then(() => loadRiskTable());
 </script>
 
 <!-- Edit modal -->
