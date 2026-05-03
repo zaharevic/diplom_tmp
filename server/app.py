@@ -671,12 +671,29 @@ def normalize_package_name(name: str) -> str:
     return n
 
 
-def sla_days_for_cvss(cvss: float) -> int:
-    """Return SLA deadline in days based on CVSS score."""
-    if cvss >= 9.0: return 7
-    if cvss >= 7.0: return 30
-    if cvss >= 4.0: return 90
-    return 180
+def sla_days_for_cvss(cvss: float, in_kev: bool = False) -> int:
+    """Return SLA deadline in days based on CVSS score.
+
+    Сроки устранения уязвимостей соответствуют требованиям:
+      Методический документ ФСТЭК России «Руководство по организации процесса
+      управления уязвимостями в органе (организации)» (утв. ФСТЭК 17.05.2023).
+
+    Уровни опасности (по CVSS) и сроки устранения:
+      Критический  9.0–10.0  — до 24 часов     (1 день)
+      Высокий      7.0– 8.9  — до 7 суток       (7 дней)
+      Средний      4.0– 6.9  — до 4 недель      (28 дней)
+      Низкий       0.1– 3.9  — до 4 месяцев     (120 дней)
+
+    Особое условие: для уязвимостей, включённых в БДУ ФСТЭК или
+    CISA KEV (активно эксплуатируемых), срок сокращается до 24 часов
+    независимо от значения CVSS.
+    """
+    if in_kev:
+        return 1
+    if cvss >= 9.0: return 1
+    if cvss >= 7.0: return 7
+    if cvss >= 4.0: return 28
+    return 120
 
 
 def take_snapshot(snapshot_date: str = None) -> bool:
@@ -1684,20 +1701,21 @@ async def update_software_management(request: Request):
         normalized_for_nvd = normalize_for_nvd(original_name)
 
     # Auto-compute SLA due_date when moving to in_task
+    # Срок устранения по МД ФСТЭК «Руководство по управлению уязвимостями» (17.05.2023)
     due_date_val = None
     if status == "in_task":
         with get_db() as conn:
             row = conn.execute(
-                "SELECT cvss_max, due_date FROM software_management WHERE original_name=? AND version=?",
+                "SELECT cvss_max, in_kev, due_date FROM software_management WHERE original_name=? AND version=?",
                 (original_name, version)
             ).fetchone()
         existing_due = row["due_date"] if row else None
-        # Keep existing due_date if already set; otherwise compute fresh
         if existing_due:
             due_date_val = existing_due
         else:
-            cvss = float(row["cvss_max"] or 0.0) if row else 0.0
-            days = sla_days_for_cvss(cvss)
+            cvss   = float(row["cvss_max"] or 0.0) if row else 0.0
+            in_kev = bool(row["in_kev"]) if row else False
+            days   = sla_days_for_cvss(cvss, in_kev)
             due_date_val = (date.today() + timedelta(days=days)).isoformat()
 
     with get_db() as conn:
@@ -1754,12 +1772,12 @@ async def bulk_update_software_management(request: Request):
 
     today_str = date.today().isoformat()
     with get_db() as conn:
-        # Pre-fetch existing status + cvss_max + due_date for all packages
+        # Pre-fetch existing status + cvss_max + in_kev + due_date for all packages
         all_keys = [(pkg["original_name"], pkg.get("version", "")) for pkg in packages]
         existing_map = {}
         for n, v in all_keys:
             row = conn.execute(
-                "SELECT status, cvss_max, due_date FROM software_management WHERE original_name=? AND version=?",
+                "SELECT status, cvss_max, in_kev, due_date FROM software_management WHERE original_name=? AND version=?",
                 (n, v)
             ).fetchone()
             existing_map[(n, v)] = row
@@ -1773,14 +1791,16 @@ async def bulk_update_software_management(request: Request):
             old_row = existing_map.get((name, version))
             old_status = old_row["status"] if old_row else None
 
+            # Срок устранения — по МД ФСТЭК «Руководство по управлению уязвимостями» (17.05.2023)
             due_date_val = None
             if status == "in_task":
                 existing_due = old_row["due_date"] if old_row else None
                 if existing_due:
                     due_date_val = existing_due
                 else:
-                    cvss = float(old_row["cvss_max"] or 0.0) if old_row else 0.0
-                    days = sla_days_for_cvss(cvss)
+                    cvss   = float(old_row["cvss_max"] or 0.0) if old_row else 0.0
+                    in_kev = bool(old_row["in_kev"]) if old_row else False
+                    days   = sla_days_for_cvss(cvss, in_kev)
                     due_date_val = (date.today() + timedelta(days=days)).isoformat()
 
             conn.execute("""
