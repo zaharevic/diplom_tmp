@@ -41,8 +41,12 @@
 .rec-card.priority-5 { border-color:#90a4ae; background:#f9f9f9; }
 .rec-title { font-weight:600; font-size:13px; margin-bottom:4px; }
 .rec-desc  { font-size:12px; color:#444; white-space:pre-wrap; word-break:break-word; }
-.rec-reg   { margin-top:6px; font-size:11px; color:#1565c0; background:#e3f2fd;
-             padding:2px 7px; border-radius:3px; display:inline-block; }
+.rec-reg   { margin-top:8px; font-size:11px; background:#e3f2fd; color:#0d47a1;
+             padding:6px 10px; border-radius:4px; border-left:3px solid #1976d2;
+             line-height:1.5; }
+.rec-reg-code { font-weight:700; color:#0d47a1; }
+.rec-reg-doc  { color:#333; font-weight:500; }
+.rec-reg-scope { color:#666; font-style:italic; font-size:10px; }
 
 .modal { display:none; position:fixed; top:0; left:0; width:100%; height:100%;
          background:rgba(0,0,0,.5); z-index:1000; align-items:center; justify-content:center; }
@@ -743,6 +747,17 @@ async function openRecPanel(cveId, pkgName, version) {
             const typeLabel = REC_TYPE_LABELS[rec.rec_type] || rec.rec_type;
             const priLabel  = PRIORITY_LABELS[rec.priority] || rec.priority;
             const priColor  = {1:'#c62828',2:'#e65100',3:'#f9a825',4:'#2e7d32',5:'#607d8b'}[rec.priority] || '#888';
+            const meta      = rec.regulatory_meta || {};
+            let regHtml = '';
+            if (meta.code) {
+                regHtml = `<div class="rec-reg">
+                    <div><span class="rec-reg-code">📋 ${meta.code}</span>
+                         ${meta.title ? ` — ${meta.title}` : ''}</div>
+                    ${meta.primary_doc ? `<div class="rec-reg-doc">⚖ Регулируется: ${meta.primary_doc}</div>` : ''}
+                    ${meta.scope ? `<div class="rec-reg-scope">📌 Применимо: ${meta.scope}</div>` : ''}
+                    ${meta.extra_doc ? `<div class="rec-reg-scope">📚 Доп.: ${meta.extra_doc}</div>` : ''}
+                </div>`;
+            }
             return `<div class="rec-card priority-${rec.priority}">
                 <div class="rec-title">
                     ${typeLabel}
@@ -750,7 +765,7 @@ async function openRecPanel(cveId, pkgName, version) {
                 </div>
                 <div style="font-size:13px;font-weight:600;margin-bottom:4px;color:#222">${rec.title}</div>
                 <div class="rec-desc">${rec.description}</div>
-                ${rec.regulatory_text ? `<div class="rec-reg" title="${rec.regulatory_text}">📋 ${rec.regulatory_ref} — ФСТЭК России</div>` : ''}
+                ${regHtml}
             </div>`;
         }).join('');
 
@@ -806,12 +821,14 @@ function closeRecModal() {
 </div>
 
 <!-- Recommendations modal -->
-<div class="modal" id="recModal">
-    <div class="modal-content" style="max-width:760px;max-height:85vh;overflow-y:auto">
+<div class="modal" id="recModal" style="z-index:1100">
+    <div class="modal-content" style="max-width:780px;max-height:85vh;overflow-y:auto">
         <h2 id="recModalTitle" style="font-size:16px;margin-bottom:4px">Рекомендации</h2>
         <p style="font-size:12px;color:#777;margin-bottom:16px">
             Рекомендации сформированы на основе требований ФСТЭК России
-            (Приказы №17, №21, №239) и анализа характеристик уязвимости.
+            (Приказ №239 от 25.12.2017 — КИИ; Приказ №21 от 18.02.2013 — ИСПДн;
+            Приказ №31 от 14.03.2014 — АСУ ТП), ГОСТ Р 56546-2015,
+            ГОСТ Р 56939-2016 и анализа характеристик уязвимости.
         </p>
         <div id="recModalBody">Загружение...</div>
         <div class="modal-buttons" style="margin-top:16px">

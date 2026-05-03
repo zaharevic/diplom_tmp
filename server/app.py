@@ -1472,16 +1472,35 @@ async def get_recommendations(
     # Use manual overrides if any, otherwise auto-generate
     if manual_rows:
         result = [dict(r) for r in manual_rows]
+        for r in result:
+            meta = REGULATORY.get(r.get("regulatory_ref") or "", {})
+            r["regulatory_meta"] = {
+                "code":        meta.get("code", r.get("regulatory_ref", "")),
+                "title":       meta.get("title", ""),
+                "primary_doc": meta.get("primary_doc", ""),
+                "scope":       meta.get("scope", ""),
+                "extra_doc":   meta.get("extra_doc", ""),
+            }
     else:
-        recs   = generate(cve_id_upper, package_name, version, cvss, epss, in_kev, description)
-        result = [{
-            "rec_type":        r.rec_type,
-            "title":           r.title,
-            "description":     r.description,
-            "priority":        r.priority,
-            "regulatory_ref":  r.regulatory_ref,
-            "regulatory_text": r.regulatory_text,
-        } for r in recs]
+        recs = generate(cve_id_upper, package_name, version, cvss, epss, in_kev, description)
+        result = []
+        for r in recs:
+            meta = REGULATORY.get(r.regulatory_ref, {})
+            result.append({
+                "rec_type":        r.rec_type,
+                "title":           r.title,
+                "description":     r.description,
+                "priority":        r.priority,
+                "regulatory_ref":  r.regulatory_ref,
+                "regulatory_text": r.regulatory_text,
+                "regulatory_meta": {
+                    "code":        meta.get("code", r.regulatory_ref),
+                    "title":       meta.get("title", ""),
+                    "primary_doc": meta.get("primary_doc", ""),
+                    "scope":       meta.get("scope", ""),
+                    "extra_doc":   meta.get("extra_doc", ""),
+                },
+            })
 
     return JSONResponse({
         "cve_id":       cve_id_upper,
